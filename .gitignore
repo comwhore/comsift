@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output (plugin root only)
+/main.js
+/styles.css
+*.map
+
+# Obsidian plugin data
+data.json
+excel-modded/data.json
+
+# Optional vendored OSINT tree (see README)
+social-analyzer-main/
+
+# Local scratch
+reports/
+Untitled.canvas
+*.canvas
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+PROMPT.md
+comsift

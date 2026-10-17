@@ -1,0 +1,44 @@
+{
+  "name": "comsift",
+  "version": "1.1.2",
+  "author": "comwhore",
+  "description": "Canvas mind maps, folder investigations, native Graph links, local analysis, and embedded spreadsheets for Obsidian.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src && stylelint styles-comsift.css styles-canvas-assistant.css excel-modded/styles.css",
+    "test": "node --test tests/*.test.mjs",
+    "test:python": "python3 -m unittest discover -s tests -p 'test_backend.py'",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "canvas",
+    "mindmap",
+    "sherlock",
+    "comsift"
+  ],
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.15.18",
+    "@typescript-eslint/eslint-plugin": "^8.30.1",
+    "@typescript-eslint/parser": "^8.30.1",
+    "esbuild": "^0.25.3",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "globals": "^17.13.0",
+    "obsidian": "^1.14.4",
+    "stylelint": "^16.26.1",
+    "stylelint-no-unsupported-browser-features": "^8.1.2",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.71.2"
+  },
+  "dependencies": {
+    "autobind-decorator": "^2.4.0"
+  }
+}

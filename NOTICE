@@ -1,0 +1,25 @@
+comsift — third-party components
+================================
+
+This plugin is distributed under GPLv3. See LICENSE and COPYING.
+
+obsidian-excel (excel-modded/)
+------------------------------
+Source: https://github.com/ljcoder2015/obsidian-excel
+License: GNU General Public License v3.0 or later
+The excel-modded/ tree and the embedded Excel runtime in release builds are
+derived from that project and modified for comsift.
+
+Lovely-Mindmap
+--------------
+Source: https://github.com/shaunhurryup/lovely-mindmap
+License: MIT
+Canvas mindmap keyboard behavior is derived from Lovely-Mindmap.
+
+External tools (not bundled)
+----------------------------
+- Sherlock: https://github.com/sherlock-project/sherlock
+- Maigret and Social Analyzer: separate installs; configure paths in settings.
+
+Use OSINT features responsibly and follow website terms of service and
+applicable law.

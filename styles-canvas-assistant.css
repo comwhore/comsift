@@ -1,0 +1,26 @@
+.comsift-canvas-chat { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.comsift-canvas-chat textarea { width: 100%; resize: vertical; }
+.comsift-canvas-chat-log { flex: 1; min-height: 80px; overflow-y: auto; }
+.comsift-canvas-chat-message { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; margin-bottom: 8px; border-radius: 8px; background: var(--background-secondary); }
+.comsift-canvas-chat-message.is-user { background: var(--background-modifier-hover); }
+.comsift-canvas-chat-changes { max-height: 35%; overflow-y: auto; }
+.comsift-canvas-assistant-actions, .comsift-canvas-change-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.comsift-canvas-change-row { margin: 6px 0; }
+.comsift-canvas-change-row span { flex: 1; }
+.comsift-canvas-live-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 2147483646; overflow: visible; }
+.comsift-canvas-live-node { position: absolute; box-sizing: border-box; white-space: pre-wrap; overflow: hidden; padding: 12px; border: 3px solid var(--interactive-accent); border-radius: 8px; background: var(--background-primary); color: var(--text-normal); opacity: 0.85; }
+.comsift-canvas-live-node.is-previous { border-style: dashed; border-color: var(--text-muted); opacity: 0.38; }
+.comsift-canvas-live-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; }
+.comsift-canvas-live-edges path { fill: none; stroke: var(--interactive-accent); stroke-width: 3px; }
+.comsift-canvas-live-edges.is-previous path { stroke: var(--text-muted); stroke-dasharray: 8 5; opacity: 0.45; }
+
+.comsift-canvas-preview-original { opacity: 0.12; }
+.comsift-canvas-models { flex: none; border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 6px; }
+.comsift-canvas-models summary { cursor: pointer; color: var(--text-muted); }
+.comsift-canvas-model-profile { margin-top: 8px; }
+.comsift-canvas-model-profile > strong, .comsift-canvas-model-profile > label { display: block; font-size: var(--font-ui-small); }
+.comsift-canvas-model-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.comsift-canvas-model-fields input[type="text"] { min-width: 80px; flex: 1; }
+.comsift-canvas-model-fields input[type="number"] { width: 88px; }
+.comsift-canvas-model-fields button { font-size: var(--font-ui-smaller); }
+.comsift-canvas-models[open] { max-height: 38%; overflow-y: auto; }
