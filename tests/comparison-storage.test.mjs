@@ -4,7 +4,7 @@ import { build } from "esbuild";
 const bundled = await build({ entryPoints: ["src/analysis/service.ts"], bundle: true, platform: "node", format: "esm", write: false, loader: { ".py": "text" },
   plugins: [{ name: "mock", setup(build) {
     build.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));
-    build.onLoad({ filter: /.*/, namespace: "mock" }, () => ({ contents: 'export class Notice {} export class TFile {} export class TFolder {} export const normalizePath = x => x; export const requestUrl = () => {};', loader: "js" }));
+    build.onLoad({ filter: /.*/, namespace: "mock" }, () => ({ contents: 'export class Modal {} export const loadMermaid = async () => ({ parse: async () => true }); export class Notice {} export class TFile {} export class TFolder {} export const normalizePath = x => x; export const requestUrl = () => {};', loader: "js" }));
   } }] });
 const { AnalysisService } = await import("data:text/javascript;base64," + Buffer.from(bundled.outputFiles[0].contents).toString("base64"));
 
@@ -146,12 +146,13 @@ test("custom-only profiles reuse stable identity after a source row moves", asyn
   assert.deepEqual(frontmatter.comsift_records, ["sheet:1", "sheet:90"]);
 });
 
-test("auto-confirm honors threshold, manual reviews, loaded scope and duplicate pairs", async () => {
+test("auto-confirm stages choices without applying relationships, honoring threshold and scope", async () => {
   const plugin = { setting: { autoConfirmHighThreshold: .98 } };
   const service = new AnalysisService(plugin);
   service.reviews = async () => ({ "a → c": { status: "rejected" } });
   const calls = [];
-  service.review = async (_item, source, candidate, status) => { calls.push([source.id, candidate.id, status]); };
+  service.review = async () => { throw new Error("Auto-confirm must not apply relationships before confirmation"); };
+  service.stageReview = async (_item, source, candidate, status) => { calls.push([source.id, candidate.id, status]); };
   const records = ["a", "b", "c", "d"].map(id => ({ id, dataset: id, fields: { username: id }, raw: {}, row: 1 }));
   const pair = (left_id, right_id, evidence_score) => ({ left_id, right_id, evidence_score });
   const result = { records, pairs: [pair("a", "b", .98), pair("a", "c", 1), pair("a", "d", .97), pair("missing", "b", 1), pair("b", "a", 1), pair("c", "d", Number.NaN), pair("d", "b", Infinity)], jina: [] };
@@ -176,4 +177,25 @@ test("normal chat includes read-only canvas connections and referenced profile n
   assert.equal(context.canvases.length, 1);
   assert.match(context.canvases[0].digest.text, /related/);
   assert.ok(context.files.some(file => file.path === profile.path && file.content.includes("Profile facts")));
+});
+
+
+test("staged review saves the choice without touching profiles and preserves the committed review", async () => {
+  let content = JSON.stringify({ "a → b": { status: "related", graph_id: "existing" } });
+  const file = { path: "Person/Analysis/reviews.json" };
+  const service = new AnalysisService({ app: { vault: {
+    getFileByPath: () => file,
+    process: async (_file, change) => { content = change(content); },
+  } } });
+  service.ensureFolder = async () => "Person/Analysis";
+  const source = { id: "a" }, candidate = { id: "b" };
+  await service.stageReview({}, source, candidate, "confirmed");
+  let review = JSON.parse(content)["a → b"];
+  assert.equal(review.pending, true);
+  assert.equal(review.status, "confirmed");
+  assert.deepEqual(review.committedReview, { status: "related", graph_id: "existing" });
+  await service.stageReview({}, source, candidate, "uncertain");
+  review = JSON.parse(content)["a → b"];
+  assert.equal(review.status, "uncertain");
+  assert.equal(review.committedReview.status, "related");
 });

@@ -57,6 +57,68 @@ export function shade(base: string, distance: number, fade: number): string {
   return dark ? mix(mix(base, "#ffffff", 0.3), "#c8c8c8", amount) : mix(base, "#4a4a4a", amount);
 }
 
+/**
+ * Color for a person's own non-person notes (tool results, analysis, sheets, chats): the person color made
+ * slightly darker when it is light, slightly lighter when it is dark, so they read as "theirs" but not as them.
+ */
+export function memberShade(base: string): string {
+  return luminance(base) > 0.18 ? mix(base, "#000000", 0.3) : mix(base, "#ffffff", 0.4);
+}
+
+/**
+ * Color for a person's well-connected profiles (notable, not the person): the person's hue turned 14°, more
+ * saturated and moved towards mid lightness, so it reads apart from the person color and the member shade.
+ */
+export function notableShade(base: string): string {
+  const [hue, saturation, lightness] = hexToHsl(base);
+  const s = Math.min(0.95, Math.max(0.45, saturation * 1.15 + 0.05));
+  const l = Math.min(0.66, Math.max(0.4, lightness + (lightness < 0.5 ? 0.08 : -0.06)));
+  return hslToHex(((hue + 14) % 360 + 360) % 360, s, l);
+}
+
+/** Family/partner links remain visibly distinct from ordinary connections and same-person clusters. */
+export function relatedShade(base: string): string {
+  const [hue, saturation, lightness] = hexToHsl(base);
+  return hslToHex((hue + 45) % 360, Math.max(0.5, saturation), Math.max(0.45, Math.min(0.7, lightness)));
+}
+
+export function hexToHsl(hex: string): [number, number, number] {
+  const [r, g, b] = hexToRgb(hex).map(value => value / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), lightness = (max + min) / 2;
+  if (max === min) return [0, 0, lightness];
+  const d = max - min;
+  const saturation = lightness > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const hue = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [hue * 60, saturation, lightness];
+}
+
+function seeded(key: string): () => number {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index++) hash = Math.imul(hash ^ key.charCodeAt(index), 16777619);
+  let state = hash >>> 0;
+  return () => {
+    state = Math.imul(state ^ (state >>> 15), 2246822507) >>> 0;
+    state = Math.imul(state ^ (state >>> 13), 3266489909) >>> 0;
+    return ((state ^= state >>> 16) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Stable color for another identity found in a person's folder (a connection profile): the person's hue
+ * turned at least 24° either way, at most 40° when `closeness` is 1 and 160° when it is 0, with a small
+ * saturation/lightness change. Same key (and attempt), same color.
+ */
+export function personaColor(base: string, key: string, closeness = 0.5, attempt = 0): string {
+  const random = seeded(attempt ? `${key}:${attempt}` : key);
+  const [hue, saturation, lightness] = hexToHsl(base);
+  const near = Math.min(1, Math.max(0, closeness));
+  const min = 24, max = 40 + (1 - near) * 120;
+  const turn = (min + random() * (max - min)) * (random() < 0.5 ? -1 : 1);
+  const s = Math.min(0.9, Math.max(0.35, saturation * (0.85 + random() * 0.3)));
+  const l = Math.min(0.72, Math.max(0.32, lightness + (random() - 0.5) * 0.16));
+  return hslToHex(((hue + turn) % 360 + 360) % 360, s, l);
+}
+
 /** Pleasant, well separated random color (random hue, fixed saturation/lightness band). */
 export function randomColor(random: () => number = Math.random): string {
   return hslToHex(random() * 360, 0.55 + random() * 0.25, 0.5 + random() * 0.12);

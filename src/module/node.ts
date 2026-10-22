@@ -1,13 +1,13 @@
 import { debounce, uuid } from "../tool";
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 import autobind from "autobind-decorator";
 import type { ArrowType } from "../service/canvasModel";
 
 @autobind
 class Node {
-  main: WhereAmIPlugin;
+  main: ComsiftPlugin;
 
-  constructor(main: WhereAmIPlugin) {
+  constructor(main: ComsiftPlugin) {
     this.main = main;
   }
 

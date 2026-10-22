@@ -45443,7 +45443,7 @@ function xtos(sdata) {
 var VIEW_TYPE_EXCEL = "excel-view";
 var FRONTMATTER_KEY = "excel-plugin";
 var FRONTMATTER = ["---", "", `${FRONTMATTER_KEY}: parsed`, "", "---", "", ""].join("\n");
-var EXCEL_IMPORT_ACCEPT = ".xlsx,.xls,.xlsm,.xlsb,.ods,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+var EXCEL_IMPORT_ACCEPT = ".csv,text/csv,.xlsx,.xls,.xlsm,.xlsb,.ods,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 // src/utils/DataUtils.ts
 var import_obsidian2 = require("obsidian");
@@ -46224,6 +46224,8 @@ var ExcelView = class extends import_obsidian3.TextFileView {
     this.data = this.headerData();
   }
   setViewData(data, clear) {
+    // Acknowledging our own save must preserve the active editor and IME state.
+    if (!clear && this.sheet && data === this.data) return;
     this.data = data;
     this.app.workspace.onLayoutReady(async () => {
       this.refresh();
@@ -46242,6 +46244,13 @@ var ExcelView = class extends import_obsidian3.TextFileView {
       return;
     }
     const f = files[0];
+    if (f && /\.csv$/i.test(f.name) && this.file && typeof this.plugin.importLinkedCsv === "function") {
+      this.plugin.importLinkedCsv(this.file, f).catch((error) => {
+        console.error("[Comsift] CSV import", error);
+        new import_obsidian3.Notice("CSV import failed. Existing files were preserved.");
+      });
+      return;
+    }
     const reader = new FileReader();
     const self = this;
     reader.onload = (e2) => {
@@ -46428,6 +46437,95 @@ var ExcelView = class extends import_obsidian3.TextFileView {
     });
     updateSheetTheme(this.plugin.settings.theme === "dark");
     this.sheet.validate();
+    this.comsiftTrackSelection();
+    if (this.comsiftTarget && this.comsiftTargetFile === (this.file ? this.file.path : null))
+      this.comsiftApplyTarget(this.comsiftTarget);
+  }
+  // Comsift: keep the selected tab and cells across re-renders (resize recreates the grid) and let
+  // links such as `X.sheet#Sheet1!B4:C6` open the sheet at that range.
+  comsiftTrackSelection() {
+    const sheet = this.sheet;
+    const keep = (data, sri, sci, eri, eci) => {
+      if (this.comsiftApplying || !data)
+        return;
+      this.comsiftTarget = { sheet: data.name, sri, sci, eri, eci };
+      this.comsiftTargetFile = this.file ? this.file.path : null;
+    };
+    sheet.on("cell-selected", (data, ri, ci) => keep(data, ri, ci, ri, ci));
+    sheet.on("cells-selected", (data, range) => range && keep(data, range.sri, range.sci, range.eri, range.eci));
+    const bar = sheet.bottombar;
+    if (bar && typeof bar.swapFunc === "function") {
+      const swap = bar.swapFunc;
+      bar.swapFunc = (index) => {
+        swap(index);
+        const data = sheet.datas[index];
+        if (!this.comsiftApplying && data) {
+          this.comsiftTarget = { sheet: data.name, sri: 0, sci: 0, eri: 0, eci: 0 };
+          this.comsiftTargetFile = this.file ? this.file.path : null;
+        }
+      };
+    }
+  }
+  /** Select `target` ({ sheet?, sri, sci, eri, eci }, 0-based) and scroll it into view. */
+  comsiftSelect(target) {
+    if (!target)
+      return;
+    this.comsiftTarget = target;
+    // A target belongs to the file shown now; another file loaded into this view later ignores it.
+    this.comsiftTargetFile = this.file ? this.file.path : null;
+    if (this.sheet)
+      this.comsiftApplyTarget(target);
+  }
+  comsiftApplyTarget(target) {
+    const spreadsheet = this.sheet;
+    if (!spreadsheet || !spreadsheet.sheet)
+      return;
+    this.comsiftApplying = true;
+    try {
+      const datas = spreadsheet.datas || [];
+      let index = -1;
+      if (target.sheet) {
+        index = datas.findIndex((d) => d.name === target.sheet);
+        if (index < 0)
+          index = datas.findIndex((d) => String(d.name).toLowerCase() === String(target.sheet).toLowerCase());
+      }
+      const s = spreadsheet.sheet;
+      if (index >= 0 && datas[index] !== s.data) {
+        const bar = spreadsheet.bottombar;
+        if (bar && bar.items && bar.items[index])
+          bar.clickSwap2(bar.items[index]);
+        else
+          s.resetData(datas[index]);
+      }
+      const data = s.data;
+      const clampRow = (r) => Math.max(0, Math.min(r, data.rows.len - 1));
+      const clampCol = (c) => Math.max(0, Math.min(c, data.cols.len - 1));
+      const sri = clampRow(target.sri), sci = clampCol(target.sci);
+      const eri = clampRow(target.eri), eci = clampCol(target.eci);
+      selectorSet.call(s, false, sri, sci);
+      if (eri !== sri || eci !== sci)
+        selectorSet.call(s, true, eri, eci);
+      const top = Math.max(0, data.rows.sumHeight(0, sri) - data.rows.height * 2);
+      const left = Math.max(0, data.cols.sumWidth(0, sci) - data.cols.width);
+      s.verticalScrollbar.move({ top });
+      s.horizontalScrollbar.move({ left });
+      const shown = (bar) => bar.el && bar.el.el && bar.el.el.style.display !== "none";
+      if (shown(s.verticalScrollbar))
+        verticalScrollbarMove.call(s, top);
+      if (shown(s.horizontalScrollbar))
+        horizontalScrollbarMove.call(s, left);
+    } catch (e) {
+      console.error("[Comsift] select cells", e);
+    } finally {
+      this.comsiftApplying = false;
+    }
+  }
+  setEphemeralState(state) {
+    super.setEphemeralState(state);
+    const subpath = state && typeof state.subpath === "string" ? state.subpath : "";
+    const target = subpath && this.plugin.comsiftCellTarget ? this.plugin.comsiftCellTarget(subpath) : null;
+    if (target)
+      this.comsiftSelect(target);
   }
   copyToHTML() {
     const data = this.cellsSelected.sheet;
@@ -46484,8 +46582,8 @@ var ExcelView = class extends import_obsidian3.TextFileView {
     new import_obsidian3.Notice(t2("COPY_TO_HTML_SUCCESS"));
   }
   onResize() {
-    if (import_obsidian3.Platform.isDesktopApp) {
-      this.refresh();
+    if (import_obsidian3.Platform.isDesktopApp && this.sheet) {
+      sheetReset.call(this.sheet.sheet);
     }
     super.onResize();
   }
@@ -46714,6 +46812,11 @@ var tmpObsidianWYSIWYG = async (el, ctx) => {
       alt = alt.replace("{html}", "");
     }
     src = src != null ? src : "";
+    const comsiftCells2 = plugin.comsiftCellEmbed ? plugin.comsiftCellEmbed(file, src) : null;
+    if (comsiftCells2) {
+      internalEmbedDiv.appendChild(comsiftCells2);
+      return;
+    }
     const split2 = src.split("#");
     var excelData = normalizeSpreadsheetData(data2, file.extension);
     if (split2.length > 1) {
@@ -46771,6 +46874,13 @@ var tmpObsidianWYSIWYG = async (el, ctx) => {
   } else {
   }
   src = src != null ? src : "";
+  const comsiftCells = plugin.comsiftCellEmbed ? plugin.comsiftCellEmbed(file, src) : null;
+  if (comsiftCells) {
+    internalEmbedDiv.appendChild(comsiftCells);
+    internalEmbedDiv.removeClass("markdown-embed");
+    internalEmbedDiv.removeClass("inline-embed");
+    return;
+  }
   const split = src.split("#");
   var excelData = normalizeSpreadsheetData(data, file.extension);
   if (split.length > 1) {
@@ -47034,6 +47144,9 @@ var processInternalEmbed = async (internalEmbedEl, file) => {
   }
   if (!src)
     return;
+  const comsiftCells = plugin.comsiftCellEmbed ? plugin.comsiftCellEmbed(file, src) : null;
+  if (comsiftCells)
+    return comsiftCells;
   internalEmbedEl.removeClass("markdown-embed");
   internalEmbedEl.removeClass("inline-embed");
   const data = await vault.read(file);
@@ -47139,7 +47252,7 @@ var ExcelPlugin = class extends import_obsidian7.Plugin {
     });
   }
   buildSheetMdBodyFromCsvText(csvContent) {
-    const wb = readSync(csvContent, { type: "string" });
+    const wb = readSync(csvContent, { type: "string", raw: true });
     const sheetData = stox(wb);
     this.applyDefaultRowsLenToSheets(sheetData);
     return FRONTMATTER + "\n# Excel\n" + JSON.stringify(sheetData || []);
@@ -47373,7 +47486,7 @@ var ExcelPlugin = class extends import_obsidian7.Plugin {
               const cache = this.app.metadataCache.getCache(
                 state.state.file
               );
-              if ((cache == null ? void 0 : cache.frontmatter) && (cache == null ? void 0 : cache.frontmatter[FRONTMATTER_KEY])) {
+              if (/\.sheet(?:\.md)?$/i.test(state.state.file) || ((cache == null ? void 0 : cache.frontmatter) && (cache == null ? void 0 : cache.frontmatter[FRONTMATTER_KEY]))) {
                 const newState = {
                   ...state,
                   type: VIEW_TYPE_EXCEL
@@ -47388,6 +47501,8 @@ var ExcelPlugin = class extends import_obsidian7.Plugin {
     );
   }
   async setExcelView(leaf) {
+    if (leaf.view.getViewType() === VIEW_TYPE_EXCEL)
+      return;
     await leaf.setViewState({
       type: VIEW_TYPE_EXCEL,
       state: leaf.view.getState(),
@@ -47439,7 +47554,7 @@ var ExcelPlugin = class extends import_obsidian7.Plugin {
       excelFile,
       !subpath || subpath === "" ? { active, state: { type: VIEW_TYPE_EXCEL } } : { active, eState: { subpath }, state: { type: VIEW_TYPE_EXCEL } }
     ).then(() => {
-      if (leaf) {
+      if (leaf && leaf.view.getViewType() !== VIEW_TYPE_EXCEL) {
         this.setExcelView(leaf);
       }
     });

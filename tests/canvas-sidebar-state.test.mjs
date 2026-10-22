@@ -6,9 +6,9 @@ const output = await build({ entryPoints: ['src/analysis/canvasAssistant.ts'], b
   build.onResolve({ filter: /^\.\/canvasContext$/ }, () => ({ path: 'context', namespace: 'mock' }));
   build.onResolve({ filter: /^\.\/ollama$/ }, () => ({ path: 'client', namespace: 'mock' }));
   build.onLoad({ filter: /.*/, namespace: 'mock' }, args => ({ contents: args.path === 'obsidian'
-    ? 'export class ItemView { constructor(leaf) { this.app=leaf.app; } } export class Notice {} export function setIcon() {} export const Modifier = {};'
+    ? 'export class Component {} export const MarkdownRenderer = {}; export async function loadMermaid() {} export class ItemView { constructor(leaf) { this.app=leaf.app; } } export class Notice {} export function htmlToMarkdown(node) { return node.textContent; } export function setIcon() {} export const Modifier = {};'
     : args.path === 'context' ? 'export function resolveCanvasSettings() { throw new Error("Stale request reached context"); } export function selectCanvasContext() {}'
-    : 'export function createClient() {}' }));
+    : 'export function createClient() {} export function traceClient(client) { return client; }' }));
 } }] });
 const { CanvasAssistant } = await import('data:text/javascript;base64,' + Buffer.from(output.outputFiles[0].contents).toString('base64'));
 const plugin = { setting: { canvasContextMode: 'needed' }, canvasTools: {} };
@@ -16,7 +16,7 @@ const board = (...ids) => ({ selection: new Set(ids.map(id => ({ id }))) });
 const view = () => {
   const assistant = new CanvasAssistant({ app: {} }, plugin);
   assistant.changes = { empty() {} }; assistant.log = { empty() {} };
-  assistant.send = { disabled: false };
+  assistant.send = { disabled: false }; assistant.stop = { disabled: true };
   return assistant;
 };
 test('same-board reopen preserves captured selected-only scope until explicit recapture', () => {

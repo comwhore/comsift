@@ -139,6 +139,7 @@ declare namespace M {
     | "CreateChildSame"
     | "CreateChildRelated"
     | "RunSherlock"
+    | "RunMaigret"
     | "ArrowUp"
     | "ArrowDown"
     | "ArrowLeft"

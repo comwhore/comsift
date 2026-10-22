@@ -1,4 +1,5 @@
-// Pure helpers for the person's primary note: the `title` property and legacy title markers.
+// Pure helpers for the person's primary note: the `title` property, legacy title markers and the layout.
+import { personNoteLayout } from "./personCardFormat";
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const LEGACY_TITLE = /^<!-- (?:comsift|comshit|whereami):title -->[ \t]*\r?\n(?:# ([^\r\n]*)(?:\r?\n|$))?/m;
@@ -46,28 +47,23 @@ export function convertLegacyTitle(content: string): string {
   return next;
 }
 
-const LINKS_CALLOUT = /^> \[!comsift-links\][^\n]*(?:\r?\n>[^\n]*)*(?:\r?\n)?(?:[ \t]*\r?\n)?/;
+export interface PrimaryLayoutOptions {
+  /** Person name; the Canvas is `<name>.canvas`. */
+  name: string;
+  /** Add the person card block when missing. */
+  card: boolean;
+  /** Add the Canvas embed when missing. */
+  embedCanvas: boolean;
+  /** `***` line right before `## Notes`. */
+  divider: boolean;
+}
 
-/**
- * Embed the person's Canvas right after the frontmatter (and an old relationships callout, if any),
- * followed by a `***` divider when `divider` is set. Existing embeds only get the divider added.
- */
+/** Primary note layout: frontmatter, person card, Canvas embed, `***`, `## Notes`, user text. */
+export function primaryNoteLayout(content: string, options: PrimaryLayoutOptions): string {
+  return personNoteLayout(content, { card: options.card, canvas: `${options.name}.canvas`, addCanvas: options.embedCanvas, divider: options.divider });
+}
+
+/** Embed the person's Canvas at the top (under the card when there is one); see `primaryNoteLayout`. */
 export function withCanvasEmbed(content: string, canvasName: string, divider = true): string {
-  const escaped = canvasName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const existing = new RegExp(`^!\\[\\[(?:[^\\]|]*/)?${escaped}(?:[|#][^\\]]*)?\\]\\][ \t]*$`, "m");
-  const found = content.match(existing);
-  if (found && found.index !== undefined) {
-    if (!divider) return content;
-    const end = found.index + found[0].length;
-    const after = content.slice(end);
-    if (/^\s*\r?\n\s*(\*\*\*|---|___)\s*(\r?\n|$)/.test(after) || /^\s*(\*\*\*)\s*(\r?\n|$)/.test(after.replace(/^\r?\n/, ""))) return content;
-    return `${content.slice(0, end)}\n\n***\n\n${after.replace(/^(?:[ \t]*\r?\n)+/, "")}`;
-  }
-  const frontmatter = content.match(FRONTMATTER)?.[0] ?? "";
-  const rest = content.slice(frontmatter.length);
-  const callout = rest.match(LINKS_CALLOUT)?.[0] ?? "";
-  const body = rest.slice(callout.length).replace(/^(?:[ \t]*\r?\n)+/, "");
-  const head = frontmatter && !frontmatter.endsWith("\n") ? `${frontmatter}\n` : frontmatter;
-  const links = callout ? `${callout.replace(/\s+$/, "")}\n\n` : "";
-  return `${head}${links}![[${canvasName}]]\n\n${divider ? "***\n\n" : ""}${body}`;
+  return personNoteLayout(content, { card: false, canvas: canvasName, addCanvas: true, divider });
 }

@@ -180,7 +180,6 @@ comsift plugin styles (Canvas / Sherlock only; Excel styles appended at build).
 .comsift-status { color: var(--text-muted); font-size: var(--font-smallest); min-height: 1.2em; }
 .comsift-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .comsift-toolbar select { max-width: 260px; }
-.is-busy .comsift-status::before { content: "⏳ "; }
 .comsift-empty { color: var(--text-muted); padding: 24px; text-align: center; }
 .comsift-note { background: var(--background-secondary); border-left: 3px solid var(--text-warning); padding: 8px 12px; border-radius: 4px; font-size: var(--font-smaller); white-space: pre-wrap; }
 .comsift-ghost { background: transparent; box-shadow: none; color: var(--text-muted); font-size: var(--font-smallest); padding: 0 6px; height: auto; }
@@ -256,7 +255,7 @@ comsift plugin styles (Canvas / Sherlock only; Excel styles appended at build).
 .comsift-dataset-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; overflow-wrap: anywhere; }
 .comsift-dataset-option .comsift-source-meta { margin-left: auto; white-space: nowrap; }
 .comsift-mapping-list summary { padding: 8px 0; overflow-wrap: anywhere; font-weight: 600; }
-.comsift-mapping-list input { width: 100%; min-width: 130px; }
+.comsift-mapping-list input[type="text"] { width: 100%; min-width: 130px; }
 .comsift-prose .mermaid, .comsift-prose .mermaid svg { max-width: 100%; height: auto; }
 .comsift-signals { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 .comsift-chip.is-related { background: var(--color-purple, var(--interactive-accent)); color: var(--text-on-accent); }
@@ -301,8 +300,10 @@ comsift plugin styles (Canvas / Sherlock only; Excel styles appended at build).
 .comsift-review-arrow { color: var(--text-muted); }
 .comsift-review-row .comsift-review-actions { margin-top: 6px; }
 .comsift-review-why { margin-top: 6px; font-size: var(--font-smaller); }
-.comsift-review-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.comsift-review-confirm { font-size: var(--font-ui-medium); padding: 8px 22px; min-height: 40px; }
+.comsift-review-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+.comsift-review-footer button { min-width: 0; min-height: 0; height: var(--input-height); padding: 4px 10px; font-size: var(--font-ui-small); }
+.comsift-review-pick { font-weight: 600; }
+.comsift-review-confirm { padding: 4px 10px; }
 
 /* Graph colors */
 .comsift-person-colors { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
@@ -318,6 +319,186 @@ comsift plugin styles (Canvas / Sherlock only; Excel styles appended at build).
 button.comsift-column-mismatch {
   border-color: var(--text-error);
 }
+
+/* Columns modal */
+.comsift-columns-modal { width: min(1040px, 96vw); }
+.comsift-columns-intro { margin-top: 0; color: var(--text-muted); }
+.comsift-columns-summary { margin-bottom: 8px; font-size: var(--font-ui-small); color: var(--text-muted); }
+.comsift-columns-summary.mod-warning, .comsift-columns-problem { color: var(--text-error); }
+.comsift-columns-group { border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 8px; }
+.comsift-columns-group summary { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.comsift-columns-badge { margin-left: auto; padding: 0 6px; border-radius: var(--radius-s); background: var(--background-modifier-hover); color: var(--text-muted); font-size: var(--font-smallest); font-weight: 400; }
+.comsift-columns-badge.mod-warning { color: var(--text-error); }
+.comsift-columns-datasets, .comsift-columns-reason, .comsift-columns-note { color: var(--text-muted); font-size: var(--font-smallest); overflow-wrap: anywhere; }
+.comsift-columns-problems { margin: 4px 0; font-size: var(--font-ui-small); }
+.comsift-columns-table td { vertical-align: middle; }
+.comsift-columns-table { table-layout: fixed; }
+.comsift-columns-table col.is-samples { width: 30%; }
+.comsift-columns-table col.is-role { width: 12rem; }
+.comsift-columns-table col.is-flag { width: 3.25rem; }
+.comsift-columns-table th.comsift-columns-flag { padding: 4px 0; text-align: center; vertical-align: middle; cursor: help; }
+.comsift-columns-table th.comsift-columns-flag svg { width: var(--icon-s); height: var(--icon-s); vertical-align: middle; }
+.comsift-columns-table td.comsift-columns-flag { padding: 0; }
+.comsift-columns-check { display: flex; align-items: center; justify-content: center; min-height: 2.5rem; cursor: pointer; }
+.comsift-columns-check:hover { background: var(--background-modifier-hover); }
+.comsift-columns-check.is-disabled { cursor: default; opacity: 0.5; }
+.comsift-columns-check.is-disabled:hover { background: none; }
+.comsift-columns-table select { width: 100%; max-width: 13rem; }
+.comsift-columns-table input[type="text"] { margin-top: 4px; min-width: 0; max-width: 13rem; }
+.comsift-columns-check input[type="checkbox"] { margin: 0; cursor: inherit; }
+.comsift-columns-table tr.is-skipped .comsift-columns-name, .comsift-columns-table tr.is-skipped .comsift-columns-samples { color: var(--text-faint); }
+.comsift-columns-name { font-weight: 600; overflow-wrap: anywhere; }
+.comsift-columns-samples { max-width: 16rem; color: var(--text-muted); font-family: var(--font-monospace); font-size: var(--font-smallest); overflow-wrap: anywhere; }
+.comsift-columns-suggest { margin-top: 2px; height: auto; padding: 1px 6px; font-size: var(--font-smallest); }
+.comsift-columns-row-filter { margin-top: 14px; }
+.comsift-columns-options .setting-item { padding: 10px 0; border-top: none; }
+.comsift-columns-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 4px 0 6px; }
+.comsift-columns-small { height: auto; padding: 3px 10px; font-size: var(--font-ui-small); }
+.comsift-columns-preview-head { display: flex; gap: 8px; align-items: center; color: var(--text-muted); font-size: var(--font-ui-small); }
+.comsift-columns-preview-title { color: var(--text-normal); font-weight: 600; }
+.comsift-columns-preview-head button { margin-left: auto; }
+.comsift-columns-remember { margin-top: 8px; border-top: 1px solid var(--background-modifier-border); }
+.comsift-columns-footer { justify-content: flex-end; }
+.comsift-columns-card { margin-top: 6px; padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary-alt); }
+.comsift-columns-card-title { font-weight: 600; }
+.comsift-columns-card-label { margin-top: 4px; color: var(--text-muted); font-size: var(--font-smallest); text-transform: uppercase; }
+.comsift-columns-card ul { margin: 2px 0; padding-left: 18px; font-size: var(--font-ui-small); }
+.comsift-columns-key { color: var(--text-muted); }
+
+/* Spreadsheet ranges modal */
+.comsift-ranges-modal { width: min(1040px, 96vw); }
+.comsift-ranges-intro { margin-top: 0; color: var(--text-muted); }
+.comsift-ranges-tab { max-width: 100%; margin-bottom: 4px; }
+.comsift-ranges-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin: 6px 0; }
+.comsift-ranges-blocks, .comsift-ranges-tools, .comsift-ranges-names { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.comsift-ranges-tools button, .comsift-ranges-block button { height: auto; padding: 3px 10px; font-size: var(--font-ui-small); }
+.comsift-ranges-tools button.is-active, .comsift-ranges-name.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.comsift-ranges-block { display: inline-flex; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); }
+.comsift-ranges-block button { border-radius: 0; box-shadow: none; background: transparent; }
+.comsift-ranges-block.is-active { border-color: var(--interactive-accent); }
+.comsift-ranges-block.is-active .comsift-ranges-block-name { color: var(--text-accent); font-weight: 600; }
+.comsift-ranges-block.is-pending { padding: 3px 10px; border-style: dashed; color: var(--text-accent); font-size: var(--font-ui-small); }
+.comsift-ranges-block-remove { color: var(--text-muted); }
+.comsift-ranges-label { margin-top: 8px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.comsift-ranges-names { max-height: 7.5rem; margin: 4px 0; overflow-y: auto; }
+.comsift-ranges-name { gap: 6px; height: auto; padding: 3px 10px; border-radius: var(--radius-l); font-size: var(--font-ui-small); }
+.comsift-ranges-name.is-blank { color: var(--text-faint); }
+.comsift-ranges-letter { color: var(--text-faint); font-family: var(--font-monospace); font-size: var(--font-smallest); }
+.comsift-ranges-name.is-active .comsift-ranges-letter { color: var(--text-on-accent); }
+.comsift-ranges-help { color: var(--text-muted); font-size: var(--font-smallest); }
+.comsift-ranges-grid { max-height: min(50vh, 26rem); margin: 6px 0; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); user-select: none; }
+.comsift-ranges-grid table { border-collapse: separate; border-spacing: 0; font-size: var(--font-smallest); }
+.comsift-ranges-grid th, .comsift-ranges-grid td { border-right: 1px solid var(--background-modifier-border); border-bottom: 1px solid var(--background-modifier-border); }
+.comsift-ranges-grid td { max-width: 11rem; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: cell; }
+.comsift-ranges-grid th { position: sticky; padding: 0; background: var(--background-secondary); }
+.comsift-ranges-grid thead th { top: 0; z-index: 2; }
+.comsift-ranges-grid tbody th { left: 0; z-index: 1; }
+.comsift-ranges-grid thead th.comsift-ranges-corner { left: 0; z-index: 3; }
+.comsift-ranges-grid th button { width: 100%; min-width: 2.25rem; height: auto; padding: 2px 6px; border-radius: 0; box-shadow: none; background: transparent; color: var(--text-muted); font-family: var(--font-monospace); font-size: var(--font-smallest); }
+.comsift-ranges-grid th button:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.comsift-ranges-grid th button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.comsift-ranges-grid td.is-selected { background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.comsift-ranges-grid td.is-active { background: color-mix(in srgb, var(--interactive-accent) 26%, transparent); }
+.comsift-ranges-grid td.is-header { font-weight: 600; }
+.comsift-ranges-grid td.is-dragging { background: color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+.comsift-ranges-advanced summary { cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-small); }
+.comsift-ranges-advanced textarea { width: 100%; margin-top: 4px; font-family: var(--font-monospace); font-size: var(--font-ui-small); resize: vertical; }
+.comsift-ranges-summary { margin-top: 6px; overflow-wrap: anywhere; }
+.comsift-ranges-footer { justify-content: flex-end; }
 .comsift-thinking { margin-top: 6px; color: var(--text-muted); }
 .comsift-thinking summary { cursor: pointer; font-size: var(--font-ui-small); }
 .comsift-thinking pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font-size: var(--font-ui-small); }
+
+.comsift-canvas-embed { max-height: 650px; }
+
+.comsift-msg-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.comsift-handoff { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.comsift-handoff textarea { width: 100%; resize: vertical; }
+
+.comsift-inline-prompt { padding: 6px 10px; border-radius: 10px; background: var(--background-modifier-hover); outline: 1px solid var(--background-modifier-border); outline-offset: -1px; }
+.comsift-msg.is-user .comsift-inline-prompt { background: var(--background-primary); }
+/* Canvas chat: the highlight grows around the text without moving it. */
+.comsift-canvas-chat-message .comsift-inline-prompt { margin: -6px -8px; padding: 6px 8px; border-radius: 8px; }
+.comsift-inline-prompt-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.comsift-file-preview { padding: 8px; overflow-wrap: anywhere; }
+.comsift-tool-error { color: var(--text-error); }
+
+
+.comsift-error-details { margin-top: 6px; color: var(--text-muted); }
+.comsift-error-details summary { cursor: pointer; font-size: var(--font-ui-small); }
+.comsift-error-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font-size: var(--font-ui-small); user-select: text; }
+
+.comsift-variants { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.comsift-trace { margin-top: 6px; color: var(--text-muted); }
+.comsift-trace summary, .comsift-trace-call summary { cursor: pointer; font-size: var(--font-ui-small); }
+.comsift-trace pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; font-size: var(--font-ui-small); user-select: text; }
+
+.comsift-review-ai-summary { margin-top: 5px; }
+
+/* Profile header buttons (Relationship…, Promote…) next to the view actions. */
+.view-actions .comsift-profile-relationship,
+.view-actions .comsift-profile-promote { margin-inline-start: 8px; }
+
+/* Person card: ```comsift-person``` block in connection notes and people's notes. */
+.comsift-person-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-l); background: var(--background-secondary); font-size: var(--font-ui-medium); }
+.comsift-person-head { display: flex; gap: 14px; align-items: flex-start; }
+.comsift-person-avatar { --comsift-person-color: var(--interactive-accent); flex: none; display: flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 50%; overflow: hidden; background: var(--comsift-person-color); color: var(--text-on-accent); font-weight: var(--font-semibold); font-size: 1.2em; }
+.comsift-person-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.comsift-person-identity { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.comsift-person-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 1.35em; font-weight: var(--font-semibold); line-height: 1.2; overflow-wrap: anywhere; }
+.comsift-person-badge { padding: 1px 8px; border-radius: var(--radius-s); background: var(--background-modifier-hover); color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-normal); text-transform: lowercase; }
+.comsift-person-badge.is-person { background: var(--interactive-accent); color: var(--text-on-accent); text-transform: none; }
+.comsift-person-handle { color: var(--text-muted); }
+.comsift-person-label { margin-inline-end: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.comsift-person-aliases, .comsift-person-owner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.comsift-person-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.comsift-person-chip { padding: 1px 8px; border-radius: var(--radius-m); background: var(--background-primary); border: 1px solid var(--background-modifier-border); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.comsift-person-chip.is-canvas { border-style: dashed; }
+.comsift-person-fields { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.comsift-person-fields dt { color: var(--text-muted); font-size: var(--font-ui-small); }
+.comsift-person-fields dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
+.comsift-person-section { display: flex; flex-direction: column; gap: 6px; }
+.comsift-person-section-title { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); text-transform: uppercase; letter-spacing: 0.04em; }
+.comsift-person-relation { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.comsift-person-relation.is-same .comsift-person-label { color: var(--color-blue); }
+.comsift-person-relation.is-related .comsift-person-label { color: var(--color-green); }
+.comsift-person-relation.is-uncertain .comsift-person-label { color: var(--color-yellow); }
+.comsift-person-empty { color: var(--text-faint); font-size: var(--font-ui-small); }
+.comsift-person-source { display: flex; flex-direction: column; gap: 4px; }
+.comsift-person-source-caption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--font-ui-small); }
+.comsift-person-copy { padding: 2px; }
+.comsift-person-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; border-top: 1px solid var(--background-modifier-border); }
+.comsift-person-action { display: inline-flex; align-items: center; gap: 6px; font-size: var(--font-ui-small); }
+.comsift-person-action-icon { display: inline-flex; }
+.comsift-person-action-icon svg { width: 14px; height: 14px; }
+
+/* Cell embeds: ![[Example.sheet#A1:B2]] and the Sources rows on person cards. */
+.comsift-cells { max-width: 100%; overflow-x: auto; font-size: var(--font-ui-small); }
+.comsift-cells-head { margin-bottom: 4px; }
+.comsift-cells-link { color: var(--text-muted); font-size: var(--font-ui-smaller); text-decoration: none; }
+.comsift-cells-link:hover { color: var(--text-accent); text-decoration: underline; }
+.comsift-cells-missing { color: var(--text-error); }
+.comsift-cells-table { border-collapse: collapse; margin: 0; }
+.comsift-cells-table th, .comsift-cells-table td { padding: 2px 8px; border: 1px solid var(--background-modifier-border); text-align: start; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 28em; }
+.comsift-cells-table th { background: var(--background-secondary-alt); color: var(--text-faint); font-weight: var(--font-normal); font-size: var(--font-ui-smaller); }
+.comsift-cells-table td { background: var(--background-primary); user-select: text; }
+.comsift-cells-gap th, .comsift-cells-gap td { padding: 0 8px; line-height: 1; }
+
+.comsift-decision-review .modal-close-button,
+.comsift-decision-review .comsift-summary-expand { position: absolute; top: 8px; width: 24px; height: 24px; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0; padding: 0; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.comsift-decision-review .modal-close-button { right: 8px; }
+.comsift-decision-review .comsift-summary-expand { right: 40px; }
+.comsift-review-ai-summary, .comsift-summary-tab .comsift-prose { user-select: text; }
+.comsift-review-summary .comsift-chip { cursor: pointer; }
+.comsift-review-summary .comsift-chip.is-hidden { opacity: 0.4; text-decoration: line-through; }
+.comsift-review-spinner { display: inline-block; width: 12px; height: 12px; margin-left: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: comsift-review-spin 0.8s linear infinite; }
+@keyframes comsift-review-spin { to { transform: rotate(360deg); } }
+.comsift-redecide-settings { padding: 12px; margin-top: 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px; }
+.comsift-redecide-settings label { display: inline-flex; align-items: center; margin-right: 12px; gap: 4px; }
+.comsift-redecide-settings textarea { width: 100%; min-height: 180px; margin: 8px 0; }
+.comsift-summary-tab { overflow: auto; padding: 20px; }
+.comsift-diagram-viewport { width: 100%; height: 360px; overflow: hidden; position: relative; cursor: grab; touch-action: none; }
+.comsift-diagram-viewport.is-panning { cursor: grabbing; }
+.comsift-diagram-viewport svg { transform-origin: 0 0; user-select: none; }
+
+.comsift-decision-review .modal-close-button svg, .comsift-decision-review .comsift-summary-expand svg { display: block; width: 16px; height: 16px; margin: 0; }

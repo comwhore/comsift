@@ -1,16 +1,16 @@
 import { KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier } from "obsidian";
 import { Node } from "./node";
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 import autobind from "autobind-decorator";
 import { convertHotkey2Array, debounce } from "../tool";
 
 @autobind
 class Keymap {
   hotkeys: KeymapEventHandler[] = [];
-  main: WhereAmIPlugin;
+  main: ComsiftPlugin;
   node: Node;
 
-  constructor(main: WhereAmIPlugin) {
+  constructor(main: ComsiftPlugin) {
     this.main = main;
     this.node = main.node;
   }
@@ -113,6 +113,7 @@ class Keymap {
     registerHotkey("CreateBeforeSib", () => node.createBeforeSibNode());
     registerHotkey("CreateAfterSib", () => node.createAfterSibNode());
     registerHotkey("RunSherlock", () => this.main.runSherlockFromSelection());
+    registerHotkey("RunMaigret", () => this.main.runMaigretFromSelection());
     registerHotkey("ArrowLeft", navigate);
     registerHotkey("ArrowRight", navigate);
     registerHotkey("ArrowUp", navigate);

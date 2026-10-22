@@ -2,13 +2,13 @@
   "name": "comsift",
   "version": "1.1.2",
   "author": "comwhore",
-  "description": "Canvas mind maps, folder investigations, native Graph links, local analysis, and embedded spreadsheets for Obsidian.",
+  "description": "Research people in Obsidian: run Sherlock and Maigret from a Canvas, match accounts across CSV exports, and chat with an AI about your notes and boards.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src && stylelint styles-comsift.css styles-canvas-assistant.css excel-modded/styles.css",
+    "lint": "eslint src --max-warnings 0 && stylelint styles-comsift.css styles-canvas-assistant.css excel-modded/styles.css",
     "test": "node --test tests/*.test.mjs",
     "test:python": "python3 -m unittest discover -s tests -p 'test_backend.py'",
     "version": "node version-bump.mjs && git add manifest.json versions.json"

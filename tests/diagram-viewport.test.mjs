@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+const result=await build({entryPoints:['src/analysis/diagramViewport.ts'],bundle:true,platform:'node',format:'esm',write:false});
+const {diagramViewports}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].contents).toString('base64'));
+test('diagram zoom anchors cursor and pan translates content without resizing frame',()=>{
+ const handlers={},cleanups=[];
+ let wrapped=false;
+ const svg={style:{},closest:()=>wrapped,before(){}};
+ const frame={className:'',title:'',clientHeight:360,append(){wrapped=true;},getBoundingClientRect:()=>({left:10,top:20}),
+  addEventListener:(name,fn)=>handlers[name]=fn,removeEventListener:name=>delete handlers[name],setPointerCapture(){},addClass(){},removeClass(){}};
+ const stage={querySelectorAll:()=>[svg],createDiv:()=>frame};
+ let disconnected=false;
+ globalThis.MutationObserver=class {observe(){} disconnect(){disconnected=true;}};
+ diagramViewports(stage,{register:fn=>cleanups.push(fn)});
+ let prevented=0;
+ const wheel=ctrlKey=>({ctrlKey,deltaY:-100,deltaMode:0,clientX:110,clientY:70,preventDefault(){prevented++;},stopPropagation(){}});
+ handlers.wheel(wheel(false)); assert.equal(prevented,0);
+ handlers.wheel(wheel(true)); assert.equal(prevented,1);
+ const [x,y,scale]=svg.style.transform.match(/-?[\d.]+/g).map(Number);
+ assert.ok(Math.abs((100-x)/scale-100)<1e-8);
+ assert.ok(Math.abs((50-y)/scale-50)<1e-8);
+ handlers.pointerdown({button:0,pointerId:1,clientX:100,clientY:100,target:{closest:()=>null},preventDefault(){}});
+ handlers.pointermove({pointerId:1,clientX:130,clientY:120});
+ const [movedX,movedY]=svg.style.transform.match(/-?[\d.]+/g).map(Number);
+ assert.ok(Math.abs(movedX-x-30)<1e-8); assert.ok(Math.abs(movedY-y-20)<1e-8);
+ assert.equal(frame.clientHeight,360);
+ for(const cleanup of cleanups)cleanup();
+ assert.ok(disconnected); assert.deepEqual(handlers,{});
+});

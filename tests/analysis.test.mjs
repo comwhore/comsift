@@ -57,3 +57,42 @@ test("Ollama request can be cancelled", async () => {
     await assert.rejects(pending, error => error.name === "AbortError");
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test("HTTP clients reject malformed external values and interrupted responses", async () => {
+  const payloads = [
+    { models: [null] },
+    { models: "not an array" },
+    { models: [{ name: 42 }] },
+    { models: [{ name: "local", size: -1 }] },
+    { message: { content: { unsafe: true } } },
+    { choices: [{ delta: { content: ["unsafe"] } }] },
+  ];
+  let index = 0;
+  let interrupt = false;
+  const server = createServer((_request, response) => {
+    if (interrupt) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"models":');
+      setImmediate(() => response.destroy());
+      return;
+    }
+    const payload = JSON.stringify(payloads[index++]);
+    response.end(index === 6 ? `data: ${payload}\n\n` : `${payload}\n`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const settings = { ollamaUrl: base, apiBaseUrl: base, ollamaModel: "local", ollamaContext: 4096, ollamaTimeout: 2 };
+    const client = new OllamaClient(settings);
+    for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(client.models(), Error);
+    await assert.rejects(client.running(), /invalid model size/);
+    const seen = [];
+    await assert.rejects(client.chatStream([], text => seen.push(text)), /invalid message text/);
+    const { OpenAiClient } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].contents).toString("base64"));
+    await assert.rejects(new OpenAiClient(settings).chatStream([], text => seen.push(text)), /invalid message text/);
+    assert.deepEqual(seen, []);
+    interrupt = true;
+    await assert.rejects(client.models(), /interrupted|aborted|reset|unavailable/i);
+    await assert.rejects(client.chatStream([], () => {}), /interrupted|aborted|reset|unavailable/i);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

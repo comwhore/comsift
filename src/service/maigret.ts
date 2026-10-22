@@ -4,9 +4,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { promises as fs } from "fs";
 import { normalizePath, TFolder } from "obsidian";
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 import { uuid } from "../tool";
-import { opposite, placeGroup } from "./placement";
+import { ToolPublicationQueue, type ToolJobTicket } from "./toolJobs";
+import { validToolQuery } from "./toolQuery";
+import { connectionSides, resolveOutputDirection, resultGroupLayout } from "./placement";
 import {
   readToolState,
   removeTrackedChildren,
@@ -31,10 +33,16 @@ interface MaigretCommand {
 }
 
 export class MaigretService {
-  private plugin: WhereAmIPlugin;
+  private publications = new ToolPublicationQueue();
+  private plugin: ComsiftPlugin;
   private statusEl: HTMLElement;
+  private running = 0;
+  private updateStatus() {
+    this.statusEl.toggle(this.running > 0);
+    this.statusEl.textContent = this.running ? `Maigret: ${this.running} running` : "";
+  }
 
-  constructor(plugin: WhereAmIPlugin) {
+  constructor(plugin: ComsiftPlugin) {
     this.plugin = plugin;
     this.statusEl = plugin.addStatusBarItem();
     this.statusEl.hide();
@@ -51,8 +59,8 @@ export class MaigretService {
     }
 
     const query = this.extractQuery(selected.text);
-    if (!query) {
-      new Notice("Comsift: selected node has no username text.");
+    if (!validToolQuery(query)) {
+      new Notice("Comsift: enter a username without spaces, path separators or command options.");
       return;
     }
 
@@ -65,12 +73,14 @@ export class MaigretService {
       new Notice(`Comsift: ${(error as Error).message}`);
       return;
     }
+    const ticket = this.publications.begin(`${canvasFile.path}#${selected.id}`);
     this.ensureRoot(canvas, canvasFile.path, selected, query);
     await this.plugin.saveState();
     canvas.requestSave?.();
 
-    this.statusEl.show();
-    this.statusEl.textContent = "Maigret: running";
+    this.running++; this.updateStatus();
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; this.running--; this.updateStatus(); } };
     const child = spawn(command, args, {
       shell: false,
       windowsHide: true,
@@ -87,7 +97,7 @@ export class MaigretService {
     });
 
     child.on("error", (error) => {
-      this.statusEl.hide();
+      finish(); ticket.finish();
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         new Notice("Comsift: Maigret command not found. Configure it in settings.", 9000);
       } else {
@@ -96,7 +106,7 @@ export class MaigretService {
     });
 
     child.on("close", (code) => void (async () => {
-      this.statusEl.hide();
+      finish();
       const hits = await this.readJsonReport(reportDir, query);
       if (code !== 0 && hits.length === 0) {
         const fallbackHits = this.parseHits(stdout);
@@ -105,20 +115,29 @@ export class MaigretService {
           if (stderr.trim()) console.error("[Comsift][Maigret]", stderr);
           return;
         }
-        const { reports, written } = await this.writeMarkdownReports(canvasFile.path, query, fallbackHits);
-        await this.applyResults(canvas, canvasFile.path, selected, query, reports);
-        new Notice(`Comsift: Maigret returned code ${code}, but kept ${fallbackHits.length} profile(s), wrote ${written} report file(s).`);
+        const written = await this.publishResults(ticket, canvas, canvasFile.path, selected, query, fallbackHits);
+        new Notice(`Maigret exited with code ${code}. Saved ${fallbackHits.length} profiles and ${written} reports.`);
         if (stderr.trim()) console.error("[Comsift][Maigret]", stderr);
         return;
       }
-      const { reports, written } = await this.writeMarkdownReports(canvasFile.path, query, hits);
-      await this.applyResults(canvas, canvasFile.path, selected, query, reports);
+      const written = await this.publishResults(ticket, canvas, canvasFile.path, selected, query, hits);
       const prefix = code === 0 ? "found" : `returned code ${code}, kept`;
-      new Notice(`Comsift: Maigret ${prefix} ${hits.length} profile(s), wrote ${written} report file(s).`);
+      new Notice(`Maigret ${prefix} ${hits.length} profiles. Saved ${written} reports.`);
       if (code !== 0) {
         if (stderr.trim()) console.error("[Comsift][Maigret]", stderr);
       }
-    })());
+    })().catch((error: unknown) => { finish(); console.error("[Comsift][Maigret]", error); new Notice(error instanceof Error ? error.message : "Could not publish Maigret results."); }).finally(() => ticket.finish()));
+  }
+
+  private publishResults(ticket: ToolJobTicket, canvas: M.Canvas, path: string, source: M.Node, query: string, hits: MaigretHit[]): Promise<number> {
+    return ticket.publish(async replacePrevious => {
+      const { reports, written } = await this.writeMarkdownReports(path, query, hits);
+      await this.applyResults(canvas, path, source, query, reports, replacePrevious);
+      // Every found account becomes a connection profile (marked uncertain: a candidate, not verified).
+      await this.plugin.toolProfiles?.importReports(reports.map(report => report.path))
+        .catch((error: unknown) => console.error("[Comsift][Maigret] Could not create profiles", error));
+      return written;
+    });
   }
 
   private extractQuery(text: string): string {
@@ -305,24 +324,21 @@ export class MaigretService {
     sourceNode: M.Node,
     query: string,
     reports: MaigretReport[],
+    replacePrevious = true,
   ) {
-    const root = this.ensureRoot(canvas, canvasPath, sourceNode, query);
-    this.removeOldChildren(canvas, canvasPath, sourceNode.id);
-    const ROW_GAP = this.plugin.setting.ROW_GAP;
+    const root = canvas.getData().nodes.find(node => node.id === sourceNode.id);
+    if (!root) throw new Error("The source node was removed while Maigret was running. Reports were retained.");
+    if (replacePrevious) this.removeOldChildren(canvas, canvasPath, sourceNode.id);
     const childWidth = 400;
     const childHeight = 400;
-    const totalHeight = reports.length * childHeight + Math.max(0, reports.length - 1) * ROW_GAP;
-    const direction = this.plugin.setting.maigretPosition;
-    const group = placeGroup(root, { width: childWidth, height: totalHeight }, direction,
-      this.plugin.setting.COLUMN_GAP, (canvas.getData()?.nodes ?? []).filter(node => node.id !== root.id));
-    const top = group.y;
-    const x = group.x;
+    const direction = resolveOutputDirection(canvas.getData(), root.id, this.plugin.setting.maigretPosition);
+    const positions = resultGroupLayout(root, reports.length, { width: childWidth, height: childHeight }, direction,
+      this.plugin.setting.COLUMN_GAP, canvas.getData().nodes.filter(node => node.id !== root.id), this.plugin.setting.ROW_GAP);
 
     const data = canvas.getData();
     const created = reports.map((report, i) => ({
       id: uuid(),
-      x,
-      y: top + i * (childHeight + ROW_GAP),
+      ...positions[i],
       width: childWidth,
       height: childHeight,
       type: "file",
@@ -335,9 +351,8 @@ export class MaigretService {
         ...created.map((node) => ({
           id: uuid(),
           fromNode: root.id,
-          fromSide: direction,
+          ...connectionSides(root, node),
           toNode: node.id,
-          toSide: opposite(direction),
         })),
       ],
     });
@@ -345,7 +360,7 @@ export class MaigretService {
     this.plugin.state.maigretChildren[canvasPath] ??= {};
     this.plugin.state.maigretChildren[canvasPath][sourceNode.id] = {
       rootId: root.id,
-      childIds: created.map((node) => node.id),
+      childIds: [...(this.plugin.state.maigretChildren[canvasPath][sourceNode.id]?.childIds ?? []), ...created.map((node) => node.id)],
     };
     await this.plugin.saveState();
     canvas.requestSave?.();
@@ -394,7 +409,7 @@ export class MaigretService {
 
   private buildSiteMarkdown(query: string, hit: MaigretHit): string {
     const preferredHeader = this.getPreferredHeader(query, hit);
-    const rows: string[] = [`username: ${query}`];
+    const rows: string[] = [`username: ${query}`, `site: ${hit.site}`];
     for (const [key, value] of Object.entries(hit.meta)) {
       rows.push(`${key}: ${value}`);
     }

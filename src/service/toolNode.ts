@@ -1,3 +1,4 @@
+import { replaceLiveCanvas } from "./canvasLive";
 import { uuid } from "../tool";
 
 export interface ToolChildrenState {
@@ -150,7 +151,7 @@ export function removeTrackedChildren(canvas: M.Canvas, childIds: string[]) {
   const current = canvas.getData?.();
   if (!current) return;
   const removeSet = new Set(childIds);
-  canvas.importData({
+  replaceLiveCanvas(canvas, {
     nodes: (current.nodes ?? []).filter(node => !removeSet.has(node.id)),
     edges: (current.edges ?? []).filter(edge => !removeSet.has(edge.fromNode) && !removeSet.has(edge.toNode)),
   });

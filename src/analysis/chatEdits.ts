@@ -4,7 +4,7 @@ import { parseCanvasEdits } from "../service/canvasModel";
 // Pure helpers for the chat: hide plugin metadata from the model, parse proposed edits, build diffs.
 
 export interface ProposedEdit {
-  action: "create" | "replace" | "patch";
+  action: "create" | "replace" | "patch" | "append" | "delete";
   path: string;
   /** create/replace: full content. patch: replacement text. */
   content: string;
@@ -43,8 +43,24 @@ function attr(source: string, name: string): string | undefined {
 }
 
 function stripFence(value: string): string {
-  const fenced = value.match(/^\s*```[^\n]*\n([\s\S]*?)\n```\s*$/);
+  const fenced = value.match(/^\s*```(?:md|markdown)[ \t]*\n([\s\S]*?)\n```\s*$/i);
   return (fenced ? fenced[1] : value).replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+}
+
+/** Remove a fence only when it wraps executable proposal tags, retaining file Markdown. */
+export function unwrapToolFences(answer: string): string {
+  return answer.replace(/^(`{3,}|~{3,})(?:xml|json)?[ \t]*\r?\n([ \t\r\n]*<(?:edit|patch|canvas)\s[\s\S]*?<\/(?:edit|patch|canvas)>[ \t\r\n]*)^\1[ \t]*$/gim, (all: string, _fence: string, body: string) => {
+    const rest = body.replace(/<(edit|patch|canvas)\s+[^>]*>[\s\S]*?<\/\1>/gi, "").trim();
+    return rest ? all : body;
+  });
+}
+
+function incompleteToolStart(text: string): number {
+  const fences = [...text.matchAll(/^(`{3,}|~{3,})[^\n]*\r?\n[\s\S]*?^\1[ \t]*$/gm)].map(match => ({ start: match.index, end: match.index + match[0].length }));
+  return [...text.matchAll(/<(edit|patch|canvas)(?=[\s>])/gi)].find(match => !fences.some(fence => match.index >= fence.start && match.index < fence.end) && !text.slice(match.index).toLowerCase().includes(`</${match[1].toLowerCase()}>`))?.index ?? -1;
+}
+function beforeIncompleteTool(text: string, index: number): string {
+  return text.slice(0, index).replace(/(?:^|\n)(?:`{3,}|~{3,})(?:xml|json)?[ \t]*\n?[ \t]*$/i, "").trim();
 }
 
 /**
@@ -52,13 +68,18 @@ function stripFence(value: string): string {
  * `<patch path="…"><find>old</find><replace>new</replace></patch>` out of a model answer.
  * Returns the prose with the tags removed.
  */
-export function parseEdits(answer: string): { text: string; edits: ProposedEdit[] } {
+export function parseEdits(answer: string, keepIncomplete = false): { text: string; edits: ProposedEdit[] } {
   const edits: ProposedEdit[] = [];
-  const text = answer.replace(TAG, (_all, kind: string, attrs: string, body: string) => {
+  const unwrapped = unwrapToolFences(answer);
+  const fences = [...unwrapped.matchAll(/^(`{3,}|~{3,})[^\n]*\r?\n[\s\S]*?^\1[ \t]*$/gm)].map(match => ({ start: match.index, end: match.index + match[0].length }));
+  const text = unwrapped.replace(TAG, (_all: string, kind: string, attrs: string, body: string, offset: number) => {
+    if (fences.some(fence => offset >= fence.start && offset < fence.end)) return _all;
     const path = attr(attrs, "path");
     if (!path) return "";
     if (kind.toLowerCase() === "edit") {
-      const action = attr(attrs, "action")?.toLowerCase() === "create" ? "create" : "replace";
+      const requested = attr(attrs, "action")?.toLowerCase();
+      if (requested !== "create" && requested !== "replace" && requested !== "append") return "";
+      const action = requested;
       edits.push({ action, path, content: stripLineNumbers(stripFence(body)) });
     } else {
       const find = body.match(/<find>([\s\S]*?)<\/find>/i)?.[1];
@@ -69,15 +90,17 @@ export function parseEdits(answer: string): { text: string; edits: ProposedEdit[
     }
     return "";
   });
-  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), edits };
+  const dangling = keepIncomplete ? -1 : incompleteToolStart(text);
+  const prose = dangling < 0 ? text : beforeIncompleteTool(text, dangling);
+  return { text: prose.replace(/\n{3,}/g, "\n\n").trim(), edits };
 }
 
 /** Hide not-yet-closed edit tags while a response is still streaming. */
 export function visibleWhileStreaming(partial: string): { text: string; pendingEdit: boolean } {
-  const { text } = parseEdits(parseCanvasEdits(partial).text);
-  const open = text.search(/<(edit|patch|canvas)\b/i);
-  if (open === -1) return { text, pendingEdit: false };
-  return { text: text.slice(0, open).trim(), pendingEdit: true };
+  const { text } = parseEdits(parseCanvasEdits(unwrapToolFences(partial)).text, true);
+  const open = incompleteToolStart(text);
+  if (open === -1) return { text: text.replace(/(^[ \t]*)(`{3,}|~{3,})mermaid\b/gim, "$1$2text"), pendingEdit: false };
+  return { text: beforeIncompleteTool(text, open).replace(/(^[ \t]*)(`{3,}|~{3,})mermaid\b/gim, "$1$2text"), pendingEdit: true };
 }
 
 export type DiffLine = { kind: "same" | "add" | "del"; text: string };
@@ -111,7 +134,9 @@ export function diffLines(before: string, after: string): DiffLine[] {
 export function applyToText(edit: ProposedEdit, path: string, original: string | null): string {
   if (edit.action === "create") return edit.content;
   if (original === null) throw new Error("The file to change does not exist.");
+  if (edit.action === "delete") return "";
   if (edit.action === "replace") return restoreMetadata(path, original, edit.content);
+  if (edit.action === "append") return original + (original.endsWith("\n") || !original ? "" : "\n") + edit.content;
   const find = edit.find ?? "";
   if (!find) throw new Error("Patch has an empty search text.");
   const first = original.indexOf(find);
@@ -169,4 +194,22 @@ export function parseLineLink(href: string): LineTarget | null {
   const from = Number(match[2]);
   const to = match[3] ? Math.max(from, Number(match[3])) : from;
   return from > 0 ? { path: match[1], from, to } : null;
+}
+
+/** Make a requested display title usable as a cross-platform filename, for creation only.
+ * Parent paths remain strict: never turn traversal or hidden directories into valid paths.
+ */
+export function newNotePath(value: string): string {
+  const path = value.replace(/\\/g, "/").trim();
+  const parts = path.split("/");
+  const name = parts.pop() ?? "";
+  if (parts.some(part => !part || part.startsWith(".") || /[<>:"|?*]/.test(part)) || path.startsWith("/") || [...path].some(char => char.charCodeAt(0) < 32)) {
+    throw new Error("New note path must stay inside the selected folder.");
+  }
+  if (!name || name.startsWith(".")) throw new Error("New note needs a filename.");
+  let safe = name.replace(/[<>:"|?*]/g, "").replace(/[. ]+$/, "").trim();
+  if (!/\.[a-z0-9]+$/i.test(safe)) safe += ".md";
+  if (!safe || safe === ".md") throw new Error("New note needs a filename.");
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe)) safe = "_" + safe;
+  return [...parts, safe].join("/");
 }

@@ -1,18 +1,25 @@
 .comsift-canvas-chat { display: flex; flex-direction: column; gap: 8px; height: 100%; }
 .comsift-canvas-chat textarea { width: 100%; resize: vertical; }
 .comsift-canvas-chat-log { flex: 1; min-height: 80px; overflow-y: auto; }
-.comsift-canvas-chat-message { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; margin-bottom: 8px; border-radius: 8px; background: var(--background-secondary); }
+.comsift-canvas-chat-message { overflow-wrap: anywhere; padding: 10px; margin-bottom: 8px; border-radius: 8px; background: var(--background-secondary); }
 .comsift-canvas-chat-message.is-user { background: var(--background-modifier-hover); }
 .comsift-canvas-chat-changes { max-height: 35%; overflow-y: auto; }
 .comsift-canvas-assistant-actions, .comsift-canvas-change-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.comsift-canvas-change-row { margin: 6px 0; }
-.comsift-canvas-change-row span { flex: 1; }
+.comsift-canvas-change-row { margin: 6px 0; padding: 8px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); }
+.comsift-canvas-change-label { flex: 1; min-width: 120px; }
+.comsift-canvas-change-label small { display: block; color: var(--text-muted); }
+.comsift-canvas-change-row.is-blocked { border-style: dashed; }
 .comsift-canvas-live-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 2147483646; overflow: visible; }
 .comsift-canvas-live-node { position: absolute; box-sizing: border-box; white-space: pre-wrap; overflow: hidden; padding: 12px; border: 3px solid var(--interactive-accent); border-radius: 8px; background: var(--background-primary); color: var(--text-normal); opacity: 0.85; }
+.comsift-canvas-live-node.is-group { background: transparent; font-weight: 600; padding: 8px 12px; }
 .comsift-canvas-live-node.is-previous { border-style: dashed; border-color: var(--text-muted); opacity: 0.38; }
 .comsift-canvas-live-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; }
-.comsift-canvas-live-edges path { fill: none; stroke: var(--interactive-accent); stroke-width: 3px; }
-.comsift-canvas-live-edges.is-previous path { stroke: var(--text-muted); stroke-dasharray: 8 5; opacity: 0.45; }
+.comsift-canvas-live-edges path { fill: none; stroke: currentcolor; stroke-width: 2px; }
+.comsift-canvas-live-edges path[data-path="dotted"] { stroke-dasharray: 2 6; stroke-linecap: round; }
+.comsift-canvas-live-edges path[data-path="short-dashed"] { stroke-dasharray: 8 6; }
+.comsift-canvas-live-edges path[data-path="long-dashed"] { stroke-dasharray: 18 8; }
+.comsift-canvas-live-edges text { fill: var(--text-normal); stroke: var(--background-primary); stroke-width: 5px; paint-order: stroke; text-anchor: middle; dominant-baseline: middle; font-size: 14px; }
+.comsift-canvas-live-edges.is-previous { opacity: 0.25; }
 
 .comsift-canvas-preview-original { opacity: 0.12; }
 .comsift-canvas-models { flex: none; border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 6px; }

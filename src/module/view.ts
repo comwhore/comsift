@@ -1,10 +1,10 @@
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 import { findClosestNodeByBbox } from "../tool";
 
 class View {
-  main: WhereAmIPlugin;
+  main: ComsiftPlugin;
 
-  constructor(main: WhereAmIPlugin) {
+  constructor(main: ComsiftPlugin) {
     this.main = main;
   }
 

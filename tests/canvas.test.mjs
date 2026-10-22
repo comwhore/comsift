@@ -21,13 +21,13 @@ test("arrow types round-trip through labels and markers", () => {
   assert.equal(same.label, "Sample Person");
   assert.equal(m.arrowType(same, "Sample Person"), "same");
   const related = m.withArrowType(same, "related", "Sample Person", colors);
-  assert.equal(related.label, "related");
+  assert.equal(related.label, "Sample Person");
   const uncertain = m.withArrowType(related, "uncertain", "Sample Person", colors);
-  assert.equal(uncertain.label, "uncertain");
+  assert.equal(uncertain.label, "Sample Person");
   assert.equal(uncertain.color, colors.uncertain);
   assert.equal(m.arrowType(uncertain, "Sample Person"), "uncertain");
   const normal = m.withArrowType(uncertain, "normal", "Sample Person", colors);
-  assert.equal(normal.label, undefined);
+  assert.equal(normal.label, "Sample Person");
   assert.equal(m.arrowType(normal, "Sample Person"), "normal");
   assert.equal(m.withArrowType({ id: "2", fromNode: "a", toNode: "b", label: "mine" }, "normal", "Sample Person", colors).label, "mine");
 });
@@ -149,4 +149,55 @@ test("new-node aliases with node prefix remain usable across creation, connect a
   assert.equal(second.x, 900);
   assert.ok(result.data.edges.some(e => e.fromNode === first.id && e.toNode === second.id));
   assert.throws(() => m.applyCanvasOps(data, [{ op: "add", ref: "1", text: "shadow" }], { digest, colors, personName: "Sample Person", newId: () => "new" }), /already in use/);
+});
+
+test("lenient parsing: bare op arrays, path-less tags, truncated blocks", () => {
+  const ops = '[{"op":"add","ref":"a","text":"test 4","near":"l-abc","direction":"bottom"}]';
+  const fenced = m.parseCanvasEdits(`Adding it.\n\n\`\`\`json\n${ops}\n\`\`\``, "B/Board.canvas");
+  assert.equal(fenced.edits.length, 1); assert.equal(fenced.edits[0].path, "B/Board.canvas"); assert.equal(fenced.text, "Adding it.");
+  const bare = m.parseCanvasEdits(`Done.\n${ops}`, "B/Board.canvas");
+  assert.equal(bare.edits[0].ops[0].op, "add"); assert.equal(bare.text, "Done.");
+  const noPath = m.parseCanvasEdits(`<canvas>${ops.replace("}]", "},]")}</canvas>`, "B/Board.canvas");
+  assert.equal(noPath.edits[0].error, undefined); assert.equal(noPath.edits[0].ops.length, 1);
+  const cut = m.parseCanvasEdits(`<canvas path="B/Board.canvas">${ops}`, "B/Board.canvas");
+  assert.equal(cut.edits[0].ops.length, 1);
+  assert.equal(m.parseCanvasEdits(`\`\`\`json\n${ops}\n\`\`\``).edits.length, 0, "strict without a default path");
+  assert.equal(m.parseCanvasEdits("```json\n[1,2]\n```", "B/Board.canvas").edits.length, 0);
+});
+
+test("hideCanvasOps hides finished and half-written operation JSON", () => {
+  assert.equal(m.hideCanvasOps('Sure.\n\n```json\n[\n  {"op":"add","te'), "Sure.");
+  assert.equal(m.hideCanvasOps('Sure.\n\n```json\n[{"op":"add"}]\n```\nAfter'), "Sure.\n\nAfter");
+  assert.equal(m.hideCanvasOps('Sure.\n<canvas path="x.canvas">[{"op"'), "Sure.");
+  assert.equal(m.hideCanvasOps("Sure <can"), "Sure");
+  assert.equal(m.hideCanvasOps("```json\n{\"a\":1}\n```"), "```json\n{\"a\":1}\n```");
+  assert.equal(m.hideCanvasOps("Use `a < b` here"), "Use `a < b` here");
+});
+
+test("arrow edits accept the style and direction wording models actually use", () => {
+  const data = { nodes: [node("a"), node("b")], edges: [{ id: "e", fromNode: "a", toNode: "b" }] };
+  const run = op => m.applyCanvasOps(data, [{ op: "edge", edge: "e1", ...op }], { digest: m.canvasDigest(data), personName: "P", colors, newId: () => "new" }).data.edges[0];
+  assert.equal(run({ styleAttributes: { path: "dashed" } }).styleAttributes.path, "short-dashed");
+  assert.equal(run({ style: "dotted" }).styleAttributes.path, "dotted");
+  assert.equal(run({ dashed: true }).styleAttributes.path, "short-dashed");
+  assert.equal(run({ styleAttributes: { pathfindingMethod: "Curved" } }).styleAttributes.pathfindingMethod, "bezier");
+  const both = run({ direction: "both" });
+  assert.equal(both.fromEnd, "arrow"); assert.equal(both.toEnd, "arrow");
+  const reversed = run({ arrows: "reverse" });
+  assert.equal(reversed.fromEnd, "arrow"); assert.equal(reversed.toEnd, "none");
+  assert.throws(() => run({ styleAttributes: { path: "wavy" } }), /Invalid arrow style/);
+});
+
+test("Canvas chains: the weakest typed arrow on a path decides, the strongest path wins", () => {
+  const data = { nodes: [node("comsift-main"), node("t", { type: "text", text: "nickname" }), node("t2", { type: "text", text: "plain" }),
+    node("f", { type: "file", file: "P/Maigret/a.md" }), node("g", { type: "file", file: "P/Maigret/b.md" })], edges: [
+    { id: "1", fromNode: "comsift-main", toNode: "t", comsift_type: "same" },
+    { id: "2", fromNode: "t", toNode: "f", comsift_type: "uncertain" },
+    { id: "3", fromNode: "comsift-main", toNode: "t2", comsift_type: "normal" },
+    { id: "4", fromNode: "t2", toNode: "g", comsift_type: "same" },
+    { id: "5", fromNode: "t", toNode: "g", comsift_type: "related" }] };
+  const links = m.canvasLinks(data, "P/P.md", "P");
+  const type = path => links.find(link => link.from === "P/P.md" && link.to === path)?.type;
+  assert.equal(type("P/Maigret/a.md"), "uncertain");
+  assert.equal(type("P/Maigret/b.md"), "same");
 });

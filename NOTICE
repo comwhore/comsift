@@ -18,6 +18,8 @@ Canvas mindmap keyboard behavior is derived from Lovely-Mindmap.
 
 External tools (not bundled)
 ----------------------------
+- Clew (optional Obsidian plugin, integration only, no code included):
+  https://github.com/christian-luger-at/obsidian-clew
 - Sherlock: https://github.com/sherlock-project/sherlock
 - Maigret and Social Analyzer: separate installs; configure paths in settings.
 

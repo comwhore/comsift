@@ -3,7 +3,11 @@ import type ComsiftPlugin from "../main";
 import { openCanvasAssistant } from "../analysis/canvasAssistant";
 import { replaceLiveCanvas } from "./canvasLive";
 import type { Investigation } from "./investigation";
-import { arrowType, flattenToolGroups, parseCanvas, withArrowType, type ArrowType, type CanvasData, type CanvasEdge } from "./canvasModel";
+import { arrowType, containsNode, fitGroup, flattenToolGroups, parseCanvas, persistArrowTypes, withArrowType, type ArrowType, type CanvasData, type CanvasEdge, type CanvasNode } from "./canvasModel";
+
+import { missingCanvasDependencies, offerCanvasEmbed } from "./canvasEmbed";
+import { uuid } from "../tool";
+import type { CanvasEmbedSpec } from "./canvasEmbedModel";
 
 const TYPE_LABELS: Record<ArrowType, string> = { normal: "Normal arrow", same: "Same person", related: "Related", uncertain: "Uncertain" };
 
@@ -16,9 +20,15 @@ export class CanvasService {
       on(name: "canvas:edge-menu", callback: (menu: Menu, edge: M.Edge) => void): import("obsidian").EventRef;
       on(name: "canvas:selection-menu", callback: (menu: Menu, canvas: M.Canvas) => void): import("obsidian").EventRef;
     };
-    this.plugin.registerEvent(workspace.on("canvas:edge-menu", (menu, edge) => this.addTypeItems(menu, () => this.edgesFor(edge))));
+    this.plugin.registerEvent(workspace.on("canvas:edge-menu", (menu, edge) => {
+      this.addTypeItems(menu, () => this.edgesFor(edge));
+      const canvas = (edge.canvas as M.Canvas | undefined) ?? this.plugin.canvas;
+      if (canvas) this.addEmbedItem(menu, canvas, edge.id);
+    }));
     this.plugin.registerEvent(workspace.on("canvas:selection-menu", (menu, canvas) => {
       this.addAssistantItem(menu, canvas);
+      if (this.canAddToGroup(canvas)) menu.addItem(item => item.setTitle("Add nodes to group").setIcon("group").onClick(() => this.addSelectionToGroup(canvas)));
+      this.addEmbedItem(menu, canvas);
       if (this.selectedEdges(canvas).length) this.addTypeItems(menu, () => this.selectedEdges(canvas));
     }));
     for (const type of ["normal", "same", "related", "uncertain"] as const) {
@@ -105,6 +115,60 @@ export class CanvasService {
       }));
   }
 
+  private embedSpec(canvas: M.Canvas, clickedId?: string): CanvasEmbedSpec | null {
+    const path = this.canvasPath(canvas);
+    if (!path) return null;
+    const data = canvas.getData();
+    const selected = new Set([...canvas.selection].map(item => item.id));
+    if (clickedId && !selected.has(clickedId)) { selected.clear(); selected.add(clickedId); }
+    const nodes = data.nodes.filter(node => selected.has(node.id)).map(node => node.id);
+    const edges = data.edges.filter(edge => selected.has(edge.id)).map(edge => edge.id);
+    if (!nodes.length && !edges.length) return null;
+    // A node-only selection includes its internal connections. Explicit arrow selections stay exact.
+    return { path, nodes, ...(edges.length ? { edges } : {}) };
+  }
+
+  addEmbedItem(menu: Menu, canvas: M.Canvas, clickedId?: string) {
+    const spec = this.embedSpec(canvas, clickedId);
+    if (!spec) return;
+    menu.addItem(item => item.setTitle("Embed selection in note").setIcon("file-input").setSection("comsift")
+      .onClick(() => this.embedSelection(canvas, clickedId)));
+  }
+
+  embedSelection(canvas: M.Canvas, clickedId?: string) {
+    const missing = missingCanvasDependencies(this.plugin);
+    if (missing.length) { new Notice(`Enable required plugins: ${missing.join(", ")}.`); return; }
+    const spec = this.embedSpec(canvas, clickedId);
+    if (!spec) return;
+    if (spec.nodes.length === 1 && !spec.edges?.length) { offerCanvasEmbed(this.plugin, spec); return; }
+    // BEC embeds one card/group, not arbitrary arrow IDs. A native group preserves the live region.
+    const data = canvas.getData() as unknown as CanvasData;
+    const ids = new Set(spec.nodes);
+    for (const edge of data.edges) if (spec.edges?.includes(edge.id)) { ids.add(edge.fromNode); ids.add(edge.toNode); }
+    const members = data.nodes.filter(node => ids.has(node.id));
+    if (!members.length) return;
+    const group: CanvasNode = { id: uuid(), type: "group", label: "Embedded selection", x: 0, y: 0, width: 100, height: 100 };
+    fitGroup(group, members);
+    replaceLiveCanvas(canvas, { ...data, nodes: [group, ...data.nodes] });
+    offerCanvasEmbed(this.plugin, { path: spec.path, nodes: [group.id] });
+  }
+
+  canAddToGroup(canvas: M.Canvas): boolean {
+    const ids = new Set([...canvas.selection].map(item => item.id));
+    const selected = canvas.getData().nodes.filter(node => ids.has(node.id));
+    return selected.filter(node => node.type === "group").length === 1 && selected.some(node => node.type !== "group");
+  }
+
+  addSelectionToGroup(canvas: M.Canvas) {
+    if (!this.canAddToGroup(canvas)) return;
+    const data = canvas.getData() as unknown as CanvasData;
+    const ids = new Set([...canvas.selection].map(item => item.id));
+    const group = data.nodes.find(node => ids.has(node.id) && node.type === "group")!;
+    const members = data.nodes.filter(node => node.id !== group.id && (ids.has(node.id) || containsNode(group, node)));
+    const updated = { ...group }; fitGroup(updated, members);
+    replaceLiveCanvas(canvas, { ...data, nodes: data.nodes.map(node => node.id === group.id ? updated : node) });
+  }
+
   private selectedEdges(canvas: M.Canvas): Array<{ canvas: M.Canvas; id: string }> {
     const out: Array<{ canvas: M.Canvas; id: string }> = [];
     for (const item of canvas.selection as Set<unknown>) {
@@ -148,7 +212,6 @@ export class CanvasService {
     const ids = new Set(targets.map(target => target.id));
     const data = canvas.getData() as unknown as CanvasData;
     replaceLiveCanvas(canvas, { ...data, edges: data.edges.map(edge => ids.has(edge.id) ? withArrowType(edge, type, name, this.colorsFor(item)) : edge) });
-    new Notice(`Comsift: ${ids.size} arrow${ids.size === 1 ? "" : "s"} set to ${type === "same" ? name : TYPE_LABELS[type].toLowerCase()}.`);
     this.plugin.graphColors?.schedule(800);
   }
 
@@ -167,8 +230,10 @@ export class CanvasService {
       if (!this.plugin.app.vault.getFileByPath(path)) continue;
       const before = await this.read(path);
       const { removed } = flattenToolGroups(before);
-      if (!removed.length) continue;
-      await this.mutate(path, data => flattenToolGroups(data).data);
+      const name = item.folderPath.split("/").at(-1) ?? "same person";
+      const legacyTypes = before.edges.some(edge => edge.comsift_type === undefined && arrowType(edge, name) !== "normal");
+      if (!removed.length && !legacyTypes) continue;
+      await this.mutate(path, data => persistArrowTypes(flattenToolGroups(data).data, name));
       for (const bucket of [this.plugin.state.sherlockChildren, this.plugin.state.maigretChildren]) {
         for (const [source, entry] of Object.entries(bucket[path] ?? {})) {
           if (removed.includes(entry.rootId)) entry.rootId = source;
@@ -178,7 +243,6 @@ export class CanvasService {
     }
     if (total) {
       await this.plugin.saveState();
-      new Notice(`Comsift: results now hang straight off their source node (${total} group node${total === 1 ? "" : "s"} removed).`);
     }
   }
 }

@@ -3,9 +3,11 @@ import { spawn } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { promises as fs } from "fs";
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 import { uuid } from "../tool";
-import { opposite, placeGroup } from "./placement";
+import { ToolPublicationQueue } from "./toolJobs";
+import { validToolQuery } from "./toolQuery";
+import { connectionSides, resolveOutputDirection, resultGroupLayout } from "./placement";
 import {
   readToolState,
   removeTrackedChildren,
@@ -33,11 +35,12 @@ interface SherlockJob {
 }
 
 export class SherlockService {
-  private plugin: WhereAmIPlugin;
+  private publications = new ToolPublicationQueue();
+  private plugin: ComsiftPlugin;
   private statusEl: HTMLElement;
   private jobs = new Map<string, SherlockJob>();
 
-  constructor(plugin: WhereAmIPlugin) {
+  constructor(plugin: ComsiftPlugin) {
     this.plugin = plugin;
     this.statusEl = plugin.addStatusBarItem();
     this.statusEl.hide();
@@ -67,8 +70,8 @@ export class SherlockService {
     }
 
     const query = this.extractQuery(selected.text);
-    if (!query) {
-      new Notice("Comsift: selected node has no username text.");
+    if (!validToolQuery(query)) {
+      new Notice("Comsift: enter a username without spaces, path separators or command options.");
       return;
     }
 
@@ -82,6 +85,7 @@ export class SherlockService {
       new Notice(`Comsift: ${(error as Error).message}`);
       return;
     }
+    const ticket = this.publications.begin(`${canvasFile.path}#${selected.id}`);
     this.ensureSherlockRootNode(canvas, canvasFile.path, selected, query);
     await this.plugin.saveState();
     canvas.requestSave?.();
@@ -97,7 +101,6 @@ export class SherlockService {
     };
     this.jobs.set(job.id, job);
     this.updateStatusBar();
-    new Notice(`Comsift: Sherlock started for "${query}".`);
     job.stopProgressNotice = this.createProgressNotice(query);
 
     const child = spawn(command, args, {
@@ -111,12 +114,13 @@ export class SherlockService {
     });
 
     child.on("error", (error) => {
+      ticket.finish();
       job.status = "failed";
       job.stopProgressNotice?.();
       this.updateStatusBar();
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         new Notice(
-          "Comsift: Sherlock command not found. Set the full executable path in settings, e.g. C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\sherlock.exe",
+          "Sherlock command not found. Set its executable path in settings.",
           9000,
         );
       } else {
@@ -126,6 +130,7 @@ export class SherlockService {
 
     child.on("close", (code) => void (async () => {
       if (code !== 0) {
+        ticket.finish();
         job.status = "failed";
         job.stopProgressNotice?.();
         this.updateStatusBar();
@@ -138,18 +143,18 @@ export class SherlockService {
 
       try {
         const rows = await this.readCsvResults(runDir, query);
-        await this.applyResults(canvas, selected, canvasFile.path, rows, query);
+        await ticket.publish(replace => this.applyResults(canvas, selected, canvasFile.path, rows, query, replace));
         job.status = "done";
         job.stopProgressNotice?.();
         this.updateStatusBar();
-        new Notice(`Comsift: Sherlock found ${rows.length} profile(s).`);
+        new Notice(`Sherlock found ${rows.length} profiles.`);
       } catch (error) {
         job.status = "failed";
         job.stopProgressNotice?.();
         this.updateStatusBar();
-        new Notice(`Comsift: could not parse Sherlock output.`);
+        new Notice("Could not read Sherlock results.");
         console.error("[Comsift][Sherlock]", error);
-      }
+      } finally { ticket.finish(); }
     })());
   }
 
@@ -250,39 +255,37 @@ export class SherlockService {
     return fields;
   }
 
-  private async applyResults(canvas: M.Canvas, sourceNode: M.Node, canvasPath: string, rows: SherlockCsvRow[], query: string) {
-    const root = this.ensureSherlockRootNode(canvas, canvasPath, sourceNode, query);
-    this.removePreviousSherlockChildren(canvas, canvasPath, sourceNode.id);
+  private async applyResults(canvas: M.Canvas, sourceNode: M.Node, canvasPath: string, rows: SherlockCsvRow[], query: string, replacePrevious = true) {
     const reportPaths = await this.writeMarkdownReports(canvasPath, rows, query);
+    await this.plugin.toolProfiles?.importReports(reportPaths).catch((error: unknown) => console.error("[Comsift][Sherlock] Could not create profiles", error));
+    const root = canvas.getData().nodes.find(node => node.id === sourceNode.id);
+    if (!root) throw new Error("The source node was removed while Sherlock was running. Reports were retained.");
     if (rows.length === 0) {
+      if (replacePrevious) this.removePreviousSherlockChildren(canvas, canvasPath, sourceNode.id);
       await this.plugin.saveState();
       canvas.requestSave?.();
       return;
     }
 
-    const ROW_GAP = this.plugin.setting.ROW_GAP;
+    if (replacePrevious) this.removePreviousSherlockChildren(canvas, canvasPath, sourceNode.id);
     const childHeight = root.height;
     const childWidth = root.width;
-    const totalHeight = rows.length * childHeight + Math.max(0, rows.length - 1) * ROW_GAP;
-    const direction = this.plugin.setting.sherlockPosition;
-    const group = placeGroup(root, { width: childWidth, height: totalHeight }, direction,
-      this.plugin.setting.COLUMN_GAP, (canvas.getData()?.nodes ?? []).filter(node => node.id !== root.id));
-    const top = group.y;
-    const x = group.x;
+    const direction = resolveOutputDirection(canvas.getData(), root.id, this.plugin.setting.sherlockPosition);
+    const positions = resultGroupLayout(root, rows.length, { width: childWidth, height: childHeight }, direction,
+      this.plugin.setting.COLUMN_GAP, canvas.getData().nodes.filter(node => node.id !== root.id), this.plugin.setting.ROW_GAP);
 
     const createdNodes: Array<{ id: string; type: string; file: string; x: number; y: number; width: number; height: number }> = [];
     for (let idx = 0; idx < rows.length; idx++) {
       createdNodes.push({ id: uuid(), type: "file", file: reportPaths[idx],
-        x, y: top + idx * (childHeight + ROW_GAP), width: childWidth, height: childHeight });
+        ...positions[idx], width: childWidth, height: childHeight });
     }
 
     const data = canvas.getData();
     const newEdges = createdNodes.map(node => ({
       id: uuid(),
       fromNode: root.id,
-      fromSide: direction,
+      ...connectionSides(root, node),
       toNode: node.id,
-      toSide: opposite(direction),
     }));
     canvas.importData({
       nodes: [...data.nodes, ...createdNodes],
@@ -298,7 +301,7 @@ export class SherlockService {
     this.plugin.state.sherlockChildren[canvasPath] ??= {};
     this.plugin.state.sherlockChildren[canvasPath][sourceNode.id] = {
       rootId: root.id,
-      childIds: createdNodes.map((node) => node.id),
+      childIds: [...(this.plugin.state.sherlockChildren[canvasPath][sourceNode.id]?.childIds ?? []), ...createdNodes.map((node) => node.id)],
     };
     await this.plugin.saveState();
     canvas.requestSave?.();

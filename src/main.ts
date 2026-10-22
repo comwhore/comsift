@@ -1,16 +1,25 @@
+import { SummaryView, SUMMARY_VIEW_TYPE } from "./analysis/summaryView";
 import { addCanvasAssistantButton, CANVAS_ASSISTANT_VIEW, CanvasAssistant } from "./analysis/canvasAssistant";
-import { App, EventRef, Menu, Notice, Plugin, PluginManifest, TFile, setIcon } from "obsidian";
+import { App, EventRef, Menu, Notice, Plugin, PluginManifest, TFile, requestUrl, setIcon } from "obsidian";
 import { mountEmbeddedExcel } from "./excelEmbedded";
 import { Keymap, Layout, Node, View, ComsiftSettingTab, DEFAULT_SETTINGS, ComsiftSettings } from "./module";
 import { MaigretService, SherlockService, InvestigationService, GraphService } from "./service";
 import type { Investigation } from "./service/investigation";
 import { AnalysisService } from "./analysis/service";
 import { GraphColorService } from "./service/graphColors";
+import { cleanupGraphCanvases } from "./service/graphCanvasCleanup";
+import { registerCanvasEmbeds } from "./service/canvasEmbed";
 import { CanvasService } from "./service/canvasTools";
 import { registerRelationshipCommands } from "./service/relationships";
+import { PersonCards } from "./service/personCard";
+import { ToolProfiles } from "./service/toolProfileImport";
+import { addRemoveCanvasFileItem, matchesCanvasShortcut, removeCanvasFiles } from "./service/canvasFileRemoval";
+import { registerConnectionRebuild } from "./analysis/connectionRebuild";
 import { SheetSync } from "./analysis/sheetSync";
 import { AnalysisView, ANALYSIS_VIEW_TYPE } from "./analysis/view";
-import { DEFAULT_CANVAS_PROMPT, DEFAULT_CONTEXT_SELECTOR_PROMPT } from "./analysis/prompts";
+import { DEFAULT_CANVAS_PROMPT, DEFAULT_CONTEXT_SELECTOR_PROMPT, LEGACY_CANVAS_PROMPT, upgradeDecisionPrompt, upgradeChatPrompt } from "./analysis/prompts";
+
+import { newerVersion, releaseVersion, RELEASE_API, RELEASES_URL } from "./service/updates";
 
 interface ToolChildrenState {
   rootId: string;
@@ -23,10 +32,19 @@ interface ComsiftState {
   investigations: Record<string, Investigation>;
   graphSources: Record<string, Record<string, string[]>>;
   graphManagedFiles: string[];
+  /** Owner-links migration done (notes backed up first, see GraphService). */
+  graphOwnerMigration?: string;
   /** Color group queries this plugin wrote to graph.json. */
   graphColorQueries: string[];
   /** Search filters this plugin added to graph.json (hidden person Canvases). */
   graphSearchTokens: string[];
+  /** Legacy registry of the removed graph canvases; trashed and deleted on load (see graphCanvasCleanup). */
+  graphCanvasFiles?: Record<string, string>;
+  /** Maigret/Sherlock results saved before they became profiles were imported once. */
+  toolProfilesImported?: boolean;
+  toolProfilesCanvasChecked?: boolean;
+  updateCheckedAt?: number;
+  updateNotifiedVersion?: string;
 }
 
 interface ComsiftData {
@@ -67,6 +85,9 @@ export default class ComsiftPlugin extends Plugin {
   sheets!: SheetSync;
   graphColors!: GraphColorService;
   canvasTools!: CanvasService;
+  personCards!: PersonCards;
+  toolProfiles!: ToolProfiles;
+  private updateCheckRunning = false;
   private blurCommandRegistered = false;
   private canvasDeleteGuardInstalled = false;
   private guardedCanvasRef: unknown = null;
@@ -92,14 +113,17 @@ export default class ComsiftPlugin extends Plugin {
     this.sheets = new SheetSync(this);
     this.graphColors = new GraphColorService(this);
     this.canvasTools = new CanvasService(this);
+    this.personCards = new PersonCards(this);
+    this.toolProfiles = new ToolProfiles(this);
+    this.registerView(SUMMARY_VIEW_TYPE, leaf => new SummaryView(leaf));
     this.registerView(ANALYSIS_VIEW_TYPE, leaf => new AnalysisView(leaf, this));
     this.registerView(CANVAS_ASSISTANT_VIEW, leaf => new CanvasAssistant(leaf, this));
 
     try {
-      this.excelEmbedded = await mountEmbeddedExcel(this);
+      this.excelEmbedded = await mountEmbeddedExcel(this, (file, link) => this.personCards.cells.element(file, link));
     } catch (e) {
       console.error("[comsift] embedded Excel failed to load", e);
-      new Notice("Comsift: Excel (.sheet) failed to load — check console.");
+      new Notice(`Spreadsheet loading failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     this.addSettingTab(new ComsiftSettingTab(this));
@@ -117,9 +141,25 @@ export default class ComsiftPlugin extends Plugin {
     this.sheets.start();
     this.graphColors.start();
     this.canvasTools.start();
+    registerCanvasEmbeds(this);
     registerRelationshipCommands(this);
+    registerConnectionRebuild(this);
+    this.personCards.start();
     this.app.workspace.onLayoutReady(() => {
-      void this.analysis.migrateProfiles().catch(error => console.error("[comsift] profile migration failed", error));
+      if (this.setting.checkForUpdates) void this.checkForUpdates();
+      void cleanupGraphCanvases(this).catch(error => console.error("[comsift] graph canvas cleanup failed", error));
+      // Person cards first: it backs up old profile notes before anything rewrites them.
+      void this.personCards.migrate().catch(error => console.error("[comsift] person card migration failed", error))
+        .then(() => this.analysis.upgradeConnections()).catch(error => console.error("[comsift] connection migration failed", error))
+        .then(async () => {
+          // Second pass: drop automatic "uncertain" marks where the person's Canvas already types the account.
+          if (this.state.toolProfilesImported && this.state.toolProfilesCanvasChecked) return;
+          await this.toolProfiles.backfill(false);
+          this.state.toolProfilesImported = true;
+          this.state.toolProfilesCanvasChecked = true;
+          await this.saveState();
+        }).catch(error => console.error("[comsift] Maigret profile import failed", error));
+      if (this.setting.discardPendingAiDecisions) void this.analysis.purgePendingDecisions().catch(error => console.error("[comsift] could not clear unconfirmed AI decisions", error));
     });
   }
 
@@ -151,7 +191,45 @@ export default class ComsiftPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  async checkForUpdates(manual = false) {
+    if (this.updateCheckRunning || (!manual && Date.now() - (this.state.updateCheckedAt ?? 0) < 86_400_000)) return;
+    this.updateCheckRunning = true;
+    try {
+      const response = await requestUrl({ url: RELEASE_API, headers: { Accept: "application/vnd.github+json" }, throw: false });
+      if (response.status !== 200) {
+        if (manual) new Notice(response.status === 404 ? "No published GitHub release was found." : `Update check failed (HTTP ${response.status}).`);
+        return;
+      }
+      const version = releaseVersion(response.json);
+      if (!version) { if (manual) new Notice("GitHub did not return a stable release version."); return; }
+      if (newerVersion(this.manifest.version, version)) {
+        if (manual || this.state.updateNotifiedVersion !== version) {
+          const message = createFragment();
+          message.createSpan({ text: `Comsift ${version} is available. Installed: ${this.manifest.version}. ` });
+          message.createEl("a", { text: "View release", href: `${RELEASES_URL}/tag/${encodeURIComponent((response.json as { tag_name: string }).tag_name)}` });
+          new Notice(message, 20_000);
+          this.state.updateNotifiedVersion = version;
+        }
+      } else if (manual) new Notice(`Comsift ${this.manifest.version} is up to date.`);
+    } catch (error) {
+      if (manual) new Notice(`Could not check for updates: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.state.updateCheckedAt = Date.now();
+      this.updateCheckRunning = false;
+      await this.saveState();
+    }
+  }
+
   private registerCoreCommands() {
+    this.addCommand({ id: "import-person-folder", name: "Import person from folder", callback: () => { void this.investigations.pickImportFolder(); } });
+    this.addCommand({ id: "export-person-folder", name: "Export person folder", checkCallback: checking => {
+      const active = this.app.workspace.getActiveFile();
+      const item = active ? this.investigations.forPath(active.path) : null;
+      if (!item) return false;
+      if (!checking) void this.investigations.promptExport(item);
+      return true;
+    } });
+    this.addCommand({ id: "check-for-updates", name: "Check for updates", callback: () => { void this.checkForUpdates(true); } });
     this.addCommand({
       id: "open-analysis",
       name: "Open analysis and chat",
@@ -161,6 +239,17 @@ export default class ComsiftPlugin extends Plugin {
       id: "new-user",
       name: "New person",
       callback: () => this.investigations.promptNewUser(),
+    });
+    this.addCommand({
+      id: "upgrade-connections",
+      name: "Update connection profiles",
+      callback: () => { void this.analysis.upgradeConnections().then(count => new Notice(`Updated connections from ${count} source records.`)).catch(error => new Notice(`Could not update connections: ${error instanceof Error ? error.message : String(error)}`)); },
+    });
+
+    this.addCommand({
+      id: "maigret-profiles",
+      name: "Create profiles from Maigret results",
+      callback: () => { void this.toolProfiles.backfill().catch(error => new Notice(`Could not create profiles: ${error instanceof Error ? error.message : String(error)}`)); },
     });
 
     this.addCommand({
@@ -218,7 +307,9 @@ export default class ComsiftPlugin extends Plugin {
 
   private createCanvasInstance() {
     const timer = window.setInterval(() => {
-      const view = this.app.workspace.getLeavesOfType("canvas").first()?.view as { canvas?: M.Canvas } | undefined;
+      const recent = this.app.workspace.getMostRecentLeaf();
+      const activeCanvas = recent && this.app.workspace.getLeavesOfType("canvas").includes(recent) ? recent : null;
+      const view = (activeCanvas ?? this.app.workspace.getLeavesOfType("canvas").first())?.view as { canvas?: M.Canvas } | undefined;
       this.canvas = view?.canvas ?? null;
       if (this.canvas) {
         this.installCanvasDeleteGuard();
@@ -357,33 +448,43 @@ export default class ComsiftPlugin extends Plugin {
     activeDocument.querySelectorAll(".canvas-menu").forEach((menuEl) => {
       if (!menuEl.instanceOf(HTMLElement)) return;
       if (!menuEl.closest(".workspace-leaf")?.querySelector(".canvas-controls")) addCanvasAssistantButton(this, menuEl);
-      if (menuEl.querySelector(".comsift-sherlock-quick-btn")) return;
-
-      const templateBtn = menuEl.querySelector<HTMLButtonElement>("button.clickable-icon:last-of-type");
-      const btn = menuEl.createEl("button", {
-        cls: [...(templateBtn?.className ?? "clickable-icon").split(/\s+/).filter(Boolean), "comsift-sherlock-quick-btn"],
-        attr: { type: "button", title: "Run Sherlock on selected node", "aria-label": "Run Sherlock on selected node", "data-tooltip-position": "top" },
-      });
-      setIcon(btn, "search");
-      btn.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const leafHost = btn.closest(".workspace-leaf");
-        const viewFromLeaf = (leafHost as unknown as { view?: { canvas?: M.Canvas } } | null)?.view;
-        let canvas = viewFromLeaf?.canvas;
-        if (!canvas) {
-          const active = this.app.workspace.getMostRecentLeaf();
-          canvas = (active?.view as unknown as { canvas?: M.Canvas } | undefined)?.canvas;
+      const actions = [
+        { key: "sherlock", title: "Run Sherlock on selected node", icon: "search", run: () => this.runSherlockFromSelection() },
+        { key: "maigret", title: "Run Maigret on selected node", icon: "scan-search", run: () => this.runMaigretFromSelection() },
+        { key: "group", title: "Add nodes to group", icon: "group", run: () => { if (this.canvas) this.canvasTools.addSelectionToGroup(this.canvas); } },
+        { key: "embed", title: "Embed selection in note", icon: "file-input", run: () => { if (this.canvas) this.canvasTools.embedSelection(this.canvas); } },
+      ];
+      for (const action of actions) {
+        const existing = menuEl.querySelector<HTMLButtonElement>(`.comsift-${action.key}-quick-btn`);
+        const host = menuEl.closest(".workspace-leaf");
+        const leaf = this.app.workspace.getLeavesOfType("canvas").find(candidate => candidate.view.containerEl.closest(".workspace-leaf") === host);
+        const currentCanvas = (leaf?.view as unknown as { canvas?: M.Canvas } | undefined)?.canvas;
+        if (existing) {
+          if (action.key === "group") existing.toggle(!!currentCanvas && this.canvasTools.canAddToGroup(currentCanvas));
+          continue;
         }
-        if (!canvas) return;
-        const selection = canvas.selection;
-        if (!(selection instanceof Set) || selection.size !== 1) {
-          new Notice("Comsift: select exactly one Canvas text node first.");
-          return;
-        }
-        this.canvas = canvas;
-        this.runSherlockFromSelection();
-      });
+        const templateBtn = menuEl.querySelector<HTMLButtonElement>("button.clickable-icon:last-of-type");
+        const btn = menuEl.createEl("button", {
+          cls: [...(templateBtn?.className ?? "clickable-icon").split(/\s+/).filter(Boolean), `comsift-${action.key}-quick-btn`],
+          attr: { type: "button", title: action.title, "aria-label": action.title, "data-tooltip-position": "top" },
+        });
+        setIcon(btn, action.icon);
+        if (action.key === "group") btn.toggle(!!currentCanvas && this.canvasTools.canAddToGroup(currentCanvas));
+        btn.addEventListener("click", event => {
+          event.preventDefault(); event.stopPropagation();
+          const host = btn.closest(".workspace-leaf");
+          const leaf = this.app.workspace.getLeavesOfType("canvas").find(candidate => candidate.view.containerEl.closest(".workspace-leaf") === host);
+          const canvas = (leaf?.view as unknown as { canvas?: M.Canvas } | undefined)?.canvas;
+          if (!canvas) return;
+          if (action.key === "group" && !this.canvasTools.canAddToGroup(canvas)) return;
+          if (!canvas.selection.size || (!["embed", "group"].includes(action.key) && canvas.selection.size !== 1)) {
+            new Notice(action.key === "embed" ? "Comsift: select Canvas nodes or arrows first." : "Comsift: select exactly one Canvas text node first.");
+            return;
+          }
+          this.canvas = canvas;
+          action.run();
+        });
+      }
     });
   }
 
@@ -409,7 +510,7 @@ export default class ComsiftPlugin extends Plugin {
       const boosted = Math.max(22, Math.min(45, Math.round(base * 1.5)));
       setIf(root, "--comsift-main-font-size", `${boosted}px`, "");
 
-      // Flex only — never position/transform inner markdown layers: Canvas uses
+      // Flex only: never position/transform inner markdown layers: Canvas uses
       // layout measurements for edge anchors and port handles; transforms desync arrows.
       setIf(content, "display", "flex");
       setIf(content, "flex-direction", "column");
@@ -449,6 +550,17 @@ export default class ComsiftPlugin extends Plugin {
   }
 
   private registerCanvasInteractionGuards() {
+    const deleteFiles = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || this.isEditableTarget(event.target) || !this.getActiveCanvasFile()) return;
+      const leaf = this.app.workspace.getMostRecentLeaf();
+      const canvas = (leaf?.view as unknown as { canvas?: M.Canvas })?.canvas;
+      if (!canvas?.selection.size || [...canvas.selection].some(node => node.isEditing)) return;
+      if (!matchesCanvasShortcut(event, this.setting.canvasRemoveFileShortcut ?? "Delete")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void removeCanvasFiles(this, canvas, [...canvas.selection].map(node => node.id)).catch(error => new Notice(`Could not remove files: ${error instanceof Error ? error.message : String(error)}`));
+    };
+    this.registerDomEvent(document, "keydown", deleteFiles, true);
     this.registerDomEvent(document, "keydown", (event: KeyboardEvent) => {
       const selected = this.node.getSingleSelection();
       if (!selected || !this.getActiveCanvasFile()) return;
@@ -569,7 +681,11 @@ export default class ComsiftPlugin extends Plugin {
     this.registerEvent(
       workspace.on("canvas:node-menu", (menu, node) => {
         const canvas = (node as { canvas?: M.Canvas }).canvas ?? this.canvas;
-        if (canvas) this.canvasTools.addAssistantItem(menu, canvas, typeof node.id === "string" ? node.id : undefined);
+        if (canvas) {
+          if (typeof node.id === "string") addRemoveCanvasFileItem(this, menu, canvas, node.id);
+          this.canvasTools.addAssistantItem(menu, canvas, typeof node.id === "string" ? node.id : undefined);
+          this.canvasTools.addEmbedItem(menu, canvas, typeof node.id === "string" ? node.id : undefined);
+        }
         if (isMainNodeId(node?.id)) {
           this.hideDeleteMenuItems(menu);
         }
@@ -597,6 +713,9 @@ export default class ComsiftPlugin extends Plugin {
             .setIcon("user-round-plus")
             .onClick(() => this.investigations.promptNewUser()),
         );
+        const person = this.investigations.forPath(file.path);
+        if (person) menu.addItem(item => item.setTitle("Export person folder…").setIcon("folder-output")
+          .onClick(() => { void this.investigations.promptExport(person); }));
         if (!(file instanceof TFile)) return;
         const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
         if (file.extension === "md" && typeof frontmatter?.comsift_account === "string") {
@@ -644,12 +763,14 @@ export default class ComsiftPlugin extends Plugin {
       },
     };
     // Earlier Canvas profiles shipped with empty prompts; show useful, editable defaults on upgrade.
-    if (!this.setting.canvasModel?.prompt) this.setting.canvasModel = { ...DEFAULT_SETTINGS.canvasModel, ...this.setting.canvasModel, prompt: DEFAULT_CANVAS_PROMPT };
+    if (!this.setting.canvasModel?.prompt || this.setting.canvasModel.prompt === LEGACY_CANVAS_PROMPT) this.setting.canvasModel = { ...DEFAULT_SETTINGS.canvasModel, ...this.setting.canvasModel, prompt: DEFAULT_CANVAS_PROMPT };
+    this.setting.chatPrompt = upgradeChatPrompt(this.setting.chatPrompt);
+    this.setting.decisionPrompt = upgradeDecisionPrompt(this.setting.decisionPrompt);
+    this.setting.decisionModel = { ...this.setting.decisionModel, prompt: upgradeDecisionPrompt(this.setting.decisionModel?.prompt) };
     if (!this.setting.contextSelectorModel?.prompt) this.setting.contextSelectorModel = { ...DEFAULT_SETTINGS.contextSelectorModel, ...this.setting.contextSelectorModel, prompt: DEFAULT_CONTEXT_SELECTOR_PROMPT };
     if (data?.storageLocationVersion !== 2 && this.setting.usersFolder === "Comsift/Users") {
       this.setting.usersFolder = "";
     }
-    if (this.setting.sherlockPosition === this.setting.maigretPosition) this.setting.maigretPosition = "left";
     this.state = {
       ...DEFAULT_STATE,
       ...(data?.state ?? {}),

@@ -64,6 +64,30 @@ function setup() {
   };
   return { vault, plugin, service: new InvestigationService(plugin) };
 }
+test("export directory uses the system home or configured default and remembers successful edits", async () => {
+  const { homedir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { plugin, service } = setup();
+  const item = { id: "export-test", folderPath: "People/Example" };
+  let saves = 0;
+  plugin.saveSettings = async () => { saves++; };
+  const destinations = [];
+  service.exportFolder = async (_item, destination) => { destinations.push(destination); };
+  assert.equal(await service.exportToDirectory(item, ""), join(homedir(), "Example"));
+  assert.equal(plugin.setting.lastExportDirectory, homedir());
+  plugin.setting.defaultExportDirectory = join(homedir(), "Exports");
+  assert.equal(await service.exportToDirectory(item, "  "), join(homedir(), "Exports", "Example"));
+  const custom = join(homedir(), "Another export directory");
+  assert.equal(await service.exportToDirectory(item, ` ${custom}/ `), join(custom, "Example"));
+  assert.equal(plugin.setting.lastExportDirectory, custom);
+  assert.equal(saves, 3);
+  assert.equal(destinations.length, 3);
+  await assert.rejects(service.exportToDirectory(item, "relative/path"), /absolute export directory/);
+  service.exportFolder = async () => { throw new Error("EEXIST"); };
+  await assert.rejects(service.exportToDirectory(item, ""), /EEXIST/);
+  assert.equal(plugin.setting.lastExportDirectory, custom);
+  assert.equal(saves, 3);
+});
 
 test("new user creates unique folder, primary files and stable ID", async () => {
   const { vault, plugin, service } = setup();
@@ -151,4 +175,41 @@ test("migration snapshots originals and preserves Markdown prose and Canvas data
   assert.doesNotMatch(migrated, /<!--/);
   const backups = [...vault.files.keys()].filter(path => path.includes("/Backups/") && path.endsWith(".canvas"));
   assert.equal(backups.length, 1);
+});
+
+test("person folder export imports into a different users root with fresh ID and relocated links", async () => {
+  const { mkdtemp, readFile, readdir, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const temporary = await mkdtemp(join(tmpdir(), "comsift-portability-"));
+  try {
+    const first = setup();
+    const original = await first.service.create("Alice");
+    await first.vault.create(`${original.folderPath}/Connections/Bob.md`, `[[${original.folderPath}/Alice]]`);
+    first.vault.getFiles = () => [...first.vault.files.values()].filter(file => file instanceof TFile);
+    first.vault.readBinary = async file => new TextEncoder().encode(file.content).buffer;
+    const destination = join(temporary, "custom-export-name");
+    await first.service.exportFolder(original, destination);
+    const files = [];
+    const walk = async (folder, prefix = "custom-export-name") => {
+      for (const entry of await readdir(folder, { withFileTypes: true })) {
+        const full = join(folder, entry.name), relative = `${prefix}/${entry.name}`;
+        if (entry.isDirectory()) await walk(full, relative);
+        else {
+          const data = await readFile(full);
+          files.push({ webkitRelativePath: relative, text: async () => data.toString(), arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) });
+        }
+      }
+    };
+    await walk(destination);
+    const second = setup();
+    second.plugin.setting.usersFolder = "Imported";
+    const imported = await second.service.importFolder(files);
+    assert.equal(imported.folderPath, "Imported/Alice");
+    assert.notEqual(imported.id, original.id);
+    assert.match(second.vault.getFileByPath("Imported/Alice/Alice.md").content, new RegExp(`comsift_id: ${imported.id}`));
+    assert.equal(second.vault.getFileByPath("Imported/Alice/Connections/Bob.md").content, "[[Imported/Alice/Alice]]");
+    await assert.rejects(second.service.importFolder(files), /Folder already exists/);
+    await assert.rejects(first.service.exportFolder(original, destination), /EEXIST/);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });

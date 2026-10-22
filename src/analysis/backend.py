@@ -58,24 +58,79 @@ def headers_seen(indexes: list[int], header: list[str]) -> set[str]:
     return {key for key, count in counts.items() if count > 1}
 
 
+IDENTITY_FIELDS = ("username", "user_id", "profile_url")
+
+
+def _column_list(custom: dict, key: str) -> set[str]:
+    """Newline-separated column names stored under an option key such as "_ignore" or "_identity"."""
+    value = custom.get(key, "")
+    return {normalize(item) for item in value.split("\n") if clean(item)} if isinstance(value, str) else set()
+
+
+def _apply_column_roles(fields: dict, header: list[str], columns: dict, identity: set[str], unmatched: set[str], noidentity: set[str] | None = None) -> None:
+    """Identity columns become "id:<field>" (exact account identifiers); unmatched columns become
+    "note:<field>" so profiles keep them while Splink, evidence scoring and Jina skip them."""
+    targets = {normalize(header[index]): field for field, index in columns.items() if index is not None}
+    for key in list(fields):
+        if key.startswith("column:"):
+            targets.setdefault(key.removeprefix("column:"), key)
+    for column, field in targets.items():
+        value = fields.get(field, "")
+        if column in identity and column not in unmatched and field not in IDENTITY_FIELDS:
+            fields["id:" + field.removeprefix("column:")] = value
+        elif column in unmatched:
+            fields["note:" + field.removeprefix("column:")] = value
+        elif column in (noidentity or set()) and field in IDENTITY_FIELDS:
+            fields["column:" + field] = value
+        else:
+            continue
+        if field in FIELDS:
+            fields[field] = "" if column in unmatched or column in (noidentity or set()) else value
+        else:
+            fields.pop(field, None)
+
+
 def _merge_duplicates(records: list[dict]) -> list[dict]:
     """The same account listed in several blocks (FOLLOWING / FOLLOWERS / IN COMMON) becomes one record."""
     merged: dict[str, dict] = {}
     order: list[dict] = []
+    anchors: dict[str, set[str]] = {}
+    shared = ("username", "user_id", "profile_url", "display_name", "bio", "location", "website")
+    def identity_keys(fields):
+        chosen = sorted(field for field in fields if field.startswith("id:"))
+        return [f"{field}|{normalize(fields[field]).removeprefix('@') if field == 'username' else normalize(fields[field])}"
+                for field in (*IDENTITY_FIELDS, *chosen) if fields.get(field)]
+    def same(a, b):
+        if a.get("platform") and b.get("platform") and normalize(a["platform"]) != normalize(b["platform"]):
+            return False
+        chosen = [field for field in a if field.startswith("id:") and a[field] and b.get(field)]
+        if any(normalize(a[field]) != normalize(b[field]) for field in chosen):
+            return False
+        common = [field for field in shared if a.get(field) and b.get(field)]
+        if any(normalize(a[field]).removeprefix('@') != normalize(b[field]).removeprefix('@') for field in common):
+            return False
+        url = urlparse(a.get("profile_url", ""))
+        url_identity = "profile_url" in common and url.scheme in ("http", "https") and len(url.path) > 1 and not re.fullmatch(r"/(?:users?|profiles?|people)/?", url.path, re.I)
+        return bool(chosen) or url_identity or (bool(a.get("platform") or b.get("platform")) and any(field in common for field in ("username", "user_id"))) or ("username" in common and any(field in common for field in ("display_name", "bio", "website")))
     for record in records:
         fields = record["fields"]
-        key = (fields.get("user_id") or fields.get("username") or fields.get("profile_url")
-               or fields.get("display_name") or record["id"]).casefold()
+        # Names alone cannot identify an account; missing fields do not conflict.
+        candidates = set().union(*(anchors.get(key, set()) for key in identity_keys(fields))) if identity_keys(fields) else set()
+        key = next((key for key in sorted(candidates, key=int) if same(fields, merged[key]["fields"])), str(len(order)))
         label = record.get("relation") or record.get("section") or fields.get("relation") or ""
         if key not in merged:
             record["_labels"] = [label] if label else []
             merged[key] = record
             order.append(record)
+            for anchor in identity_keys(fields):
+                anchors.setdefault(anchor, set()).add(key)
             continue
         kept = merged[key]
         for name, value in fields.items():
             if value and not kept["fields"].get(name):
                 kept["fields"][name] = value
+        for anchor in identity_keys(kept["fields"]):
+            anchors.setdefault(anchor, set()).add(key)
         if label and label not in kept["_labels"]:
             kept["_labels"].append(label)
     for record in order:
@@ -140,6 +195,21 @@ def parse_datasets(datasets: list[dict], mappings: dict | None = None) -> list[d
         name = clean(dataset.get("name"))
         if not name:
             raise ValueError("Dataset name is required.")
+        if "records" in dataset:
+            supplied = dataset["records"]
+            if not isinstance(supplied, list):
+                raise ValueError("Profile records must be a list.")
+            for entry in supplied:
+                if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not isinstance(entry.get("fields"), dict):
+                    raise ValueError("Invalid connection profile record.")
+                if any(not isinstance(k, str) or not isinstance(v, str) for k, v in entry["fields"].items()):
+                    raise ValueError("Invalid connection fields.")
+                # Stored profiles may omit empty fields; Splink and evidence scoring expect every field.
+                fields = {**{field: "" for field in FIELDS}, **entry["fields"]}
+                records.append({**entry, "fields": fields, "raw": entry.get("raw", entry["fields"]), "_comparison_group": name})
+                if len(records) > 10_000:
+                    raise ValueError("Analysis is limited to 10,000 records per run.")
+            continue
         raw = dataset.get("csv", "")
         if len(raw) > 20_000_000:
             raise ValueError(f"{name}: CSV exceeds 20 MB limit.")
@@ -150,10 +220,16 @@ def parse_datasets(datasets: list[dict], mappings: dict | None = None) -> list[d
         custom = mappings.get(name, mappings.get("*", {}))
         if not isinstance(custom, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in custom.items()):
             raise ValueError("Each dataset mapping must map field names to column names.")
-        ignored = set(normalize(value) for value in custom.get("_ignore", "").split("\n")) if isinstance(custom, dict) and isinstance(custom.get("_ignore", ""), str) else set()
+        ignored = _column_list(custom, "_ignore")
+        # Columns the user marked as identifying one person, and columns kept out of matching.
+        identity_columns = _column_list(custom, "_identity")
+        unmatched_columns = _column_list(custom, "_nomatch")
+        noidentity_columns = _column_list(custom, "_noidentity")
+        require_identity = custom.get("_require_identity") == "1"
+        # Keys starting with "_" are options, not field → column pairs.
+        custom = {key: value for key, value in custom.items() if not key.startswith("_")}
         known = {normalize(alias) for aliases in ALIASES.values() for alias in aliases}
-        if isinstance(custom, dict):
-            known.update(normalize(value) for value in custom.values() if isinstance(value, str))
+        known.update(normalize(value) for value in custom.values())
         dataset_start = len(records) 
         segments = _segments(header, known)
         if header_index > 0:
@@ -165,9 +241,9 @@ def parse_datasets(datasets: list[dict], mappings: dict | None = None) -> list[d
         for segment_number, (label, indexes) in enumerate(segments):
             headers = {normalize(header[i]): i for i in indexes if header[i] and normalize(header[i]) not in ignored and normalize(header[i]) not in headers_seen(indexes, header)}
             columns = {}
-            mapped_names = {normalize(value) for key, value in custom.items() if key != "_ignore"}
-            for field in dict.fromkeys([*FIELDS, *(key for key in custom if key != "_ignore")]):
-                requested = custom.get(field) if isinstance(custom, dict) else None
+            mapped_names = {normalize(value) for value in custom.values()}
+            for field in dict.fromkeys([*FIELDS, *custom]):
+                requested = custom.get(field)
                 choices = (requested,) if isinstance(requested, str) and requested else ALIASES.get(field, (field,))
                 target = field if field in FIELDS else "column:" + normalize(field).removeprefix("column:")
                 columns[target] = next((headers[normalize(choice)] for choice in choices
@@ -179,22 +255,30 @@ def parse_datasets(datasets: list[dict], mappings: dict | None = None) -> list[d
                 fields = {field: (clean(row[column]) if column is not None and column < len(row) else "")
                           for field, column in columns.items()}
                 # Preserve arbitrary columns as normalized shared fields, unless explicitly mapped.
-                mapped_columns = {normalize(value) for value in custom.values() if isinstance(value, str)} if isinstance(custom, dict) else set()
                 for key, value in cells.items():
-                    if normalize(key) not in ignored and normalize(key) not in mapped_columns and normalize(key) not in known:
+                    if normalize(key) not in ignored and normalize(key) not in mapped_names and normalize(key) not in known:
                         fields.setdefault("column:" + normalize(key), value)
+                if identity_columns or unmatched_columns or noidentity_columns:
+                    _apply_column_roles(fields, header, columns, identity_columns, unmatched_columns, noidentity_columns)
                 if not any(fields.values()):
                     continue
                 if fields["profile_url"]:
                     parsed = urlparse(fields["profile_url"])
                     if parsed.scheme not in ("http", "https"):
                         fields["profile_url"] = ""
+                if require_identity and not any(value for key, value in fields.items() if key in IDENTITY_FIELDS or key.startswith("id:")):
+                    continue  # Totals, notes and blank rows are not people.
                 if not fields["platform"]:
                     host = urlparse(fields["profile_url"]).netloc.lower().removeprefix("www.").split(".")[0] if fields["profile_url"] else ""
-                    fields["platform"] = host or re.sub(r"\.sheet$", "", Path(name.split("#")[0]).stem)
+                    inferred = host or re.sub(r"\.sheet$", "", Path(name.split("#")[0]).stem)
+                    known_platform = re.search(r"(?:^|\s)(instagram|tiktok|roblox|bluesky|bsky|twitter|facebook|youtube|discord|snapchat|threads|reddit|telegram|twitch)$", inferred.lower())
+                    fields["platform"] = known_platform.group(1) if known_platform else inferred
+                    if fields["platform"] == "bsky":
+                        fields["platform"] = "bluesky"
+                original_row = index + int(dataset.get("row_offset", 0))
                 record = {
-                    "id": f"{name}:{index}" + (f".{segment_number + 1}" if len(segments) > 1 else ""),
-                    "dataset": name, "row": index, "fields": fields, "raw": cells,
+                    "id": f"{name}:{original_row}" + (f".{segment_number + 1}" if len(segments) > 1 else ""),
+                    "dataset": name, "row": original_row, "fields": fields, "raw": cells,
                 }
                 if label and len(segments) > 1:
                     record["section"] = label
@@ -202,7 +286,12 @@ def parse_datasets(datasets: list[dict], mappings: dict | None = None) -> list[d
                 if len(records) > 10_000:
                     raise ValueError("Analysis is limited to 10,000 records per run.")
         records[dataset_start:] = _merge_duplicates(records[dataset_start:])
-    return records
+    # A saved profile and its source row may both be selected. Keep that provenance once.
+    unique = {}
+    for record in records:
+        key = (record["dataset"], record["id"], json.dumps(record["fields"], sort_keys=True))
+        unique.setdefault(key, record)
+    return list(unique.values())
 
 
 TECHNICAL_FIELDS = {"user_id", "avatar_hash", "avatar_url", "relation", "followers", "verified"}
@@ -210,7 +299,7 @@ TECHNICAL_FIELDS = {"user_id", "avatar_hash", "avatar_url", "relation", "followe
 
 def profile_text(record: dict) -> str:
     return "\n".join(f"{key}: {value}" for key, value in record["fields"].items()
-                     if value and key not in TECHNICAL_FIELDS)
+                     if value and key not in TECHNICAL_FIELDS and not key.startswith("note:"))
 
 
 def simple_candidates(records: list[dict], limit: int = 200) -> list[dict]:
@@ -306,6 +395,10 @@ def _pair_signals(a: dict, b: dict) -> dict[str, float]:
         signals["mention"] = 1.0
     for key in a["custom"].keys() & b["custom"].keys():
         left, right = a["custom"][key], b["custom"][key]
+        if key.startswith("id:"):
+            if left == right:
+                signals[key] = 1.0  # A user-chosen identity column: exact equality only.
+            continue
         if left == right:
             signals["column:" + key.removeprefix("column:")] = 1.0
         elif min(len(left), len(right)) >= 4:
@@ -317,7 +410,7 @@ def _pair_signals(a: dict, b: dict) -> dict[str, float]:
 
 def _is_substantive(signals: dict[str, float]) -> bool:
     """Retain explicit field links; a lone personal name or platform remains too weak."""
-    return any(key.startswith("column:") for key in signals) or "location" in signals or bool(STRONG_SIGNALS & set(signals)) or ("display_name" in signals and signals["display_name"] >= 0.95
+    return any(key.startswith(("column:", "id:")) for key in signals) or "location" in signals or bool(STRONG_SIGNALS & set(signals)) or ("display_name" in signals and signals["display_name"] >= 0.95
                                                     and len(signals) >= 2)
 
 
@@ -325,12 +418,12 @@ def _combine(signals: dict[str, float]) -> float:
     """Noisy-OR: several weak independent signals add up (similar handle + same display name)."""
     remaining = 1.0
     for name, value in signals.items():
-        remaining *= 1.0 - SIGNAL_WEIGHTS.get(name, 0.65) * value
+        remaining *= 1.0 - SIGNAL_WEIGHTS.get(name, 0.99 if name.startswith("id:") else 0.65) * value
     return round(1.0 - remaining, 3)
 
 
 def evidence_pairs(records: list[dict], existing: list[dict], per_source: int = 5,
-                   threshold: float = 0.6, limit: int = 400) -> list[dict]:
+                   threshold: float = 0.6, limit: int = 400, within: bool = False, allow_primary_name_candidates: bool = False) -> list[dict]:
     """Attach combined multi-field evidence to every known pair and add near-miss pairs.
 
     Cheap local signal for review ordering; not a calibrated match probability.
@@ -345,7 +438,7 @@ def evidence_pairs(records: list[dict], existing: list[dict], per_source: int = 
         user = _stem(fields.get("username", ""))
         name = _stem(fields.get("display_name", ""))
         prepared.append({
-            "custom": {key: normalize(value) for key, value in fields.items() if key not in FIELDS and value},
+            "custom": {key: normalize(value) for key, value in fields.items() if key not in FIELDS and value and not key.startswith("note:")},
             "record": record, "user": user, "user_base": user.rstrip("0123456789"), "name": name,
             "tokens": {t for t in re.split(r"\W+", normalize(fields.get("display_name", ""))) if len(t) > 1},
             "bio_tokens": {t for t in re.split(r"\W+", normalize(fields.get("bio", ""))) if len(t) >= 4},
@@ -365,8 +458,9 @@ def evidence_pairs(records: list[dict], existing: list[dict], per_source: int = 
             continue
         known.add(frozenset((pair["left_id"], pair["right_id"])))
         signals = _pair_signals(prepared[i], prepared[j])
-        if not _is_substantive(signals):
-            continue  # A shared first name or platform alone is insufficient.
+        primary_name = allow_primary_name_candidates and (prepared[i]["record"].get("is_primary") or prepared[j]["record"].get("is_primary")) and signals.get("display_name", 0) >= 0.4
+        if not (_is_substantive(signals) or primary_name):
+            continue  # A shared first name or platform alone is insufficient by default.
         pair["evidence_score"] = _combine(signals)
         pair.setdefault("evidence", {})["signals"] = signals
         kept_existing.append(pair)
@@ -408,7 +502,7 @@ def evidence_pairs(records: list[dict], existing: list[dict], per_source: int = 
         # Bound expensive similarity evaluations per source across very large tables.
         for key in sorted(blocking_keys(a), key=lambda key: (not key.startswith(("exact:", "custom-exact:", "uid:")), key)):
             for dataset, bucket in index.get(key, {}).items():
-                if dataset != a["record"]["dataset"]:
+                if within or dataset != a["record"]["dataset"]:
                     counts.update(j for j in bucket[:max(1, per_source)] if j > i)
             if len(counts) >= 500:
                 break
@@ -417,13 +511,20 @@ def evidence_pairs(records: list[dict], existing: list[dict], per_source: int = 
             (len(b["user"]) >= 5 and b["user"] in a["text"]) or (len(a["user"]) >= 5 and a["user"] in b["text"])))
         for j in sorted(counts)[:500]:
             b = prepared[j]
-            if a["record"]["dataset"] == b["record"]["dataset"]:
+            if a["record"]["id"] == b["record"]["id"]:
+                continue
+            if a["record"].get("_comparison_group") and a["record"].get("_comparison_group") == b["record"].get("_comparison_group"):
+                continue
+            if not within and a["record"]["dataset"] == b["record"]["dataset"]:
                 continue
             if frozenset((a["record"]["id"], b["record"]["id"])) in known:
                 continue
             signals = _pair_signals(a, b)
             score = _combine(signals)
-            if score < threshold or not _is_substantive(signals):
+            # A named primary person is an explicit review target. Name similarity can
+            # surface a low-score candidate without asserting an account identity.
+            primary_name = allow_primary_name_candidates and (a["record"].get("is_primary") or b["record"].get("is_primary")) and signals.get("display_name", 0) >= 0.4
+            if score < threshold or not (_is_substantive(signals) or primary_name):
                 continue
             left, right = (a, b) if order[a["record"]["dataset"]] <= order[b["record"]["dataset"]] else (b, a)
             best.setdefault(left["record"]["id"], []).append((score, {
@@ -543,15 +644,39 @@ def rerank(query: str, candidates: list[dict], model_path: str, device: str) -> 
             for rank, item in enumerate(ranked)]
 
 
+def column_profile(names: list[str], rows: list[dict]) -> dict:
+    """Sample values and fill statistics used to suggest column roles without reading whole files in the UI."""
+    samples, filled, distinct = {}, {}, {}
+    for name in names:
+        values = [row.get(name, "") for row in rows if row.get(name, "")]
+        unique = list(dict.fromkeys(values))
+        samples[name] = unique[:8]
+        filled[name] = len(values)
+        distinct[name] = len(unique)
+    examples = [{name: value for name, value in row.items() if value} for row in rows[:5]]
+    return {"samples": samples, "filled": filled, "distinct": distinct, "rows": len(rows), "examples": examples}
+
+
 def handle(request: dict) -> dict:
     action = request.get("action")
     if action == "columns":
         columns = []
         for dataset in request.get("datasets", []):
+            if "records" in dataset:
+                names = sorted({key for record in dataset["records"] for key in record["fields"]})
+                rows = [record["fields"] for record in dataset["records"]]
+                columns.append({"name": dataset["name"], "columns": names, **column_profile(names, rows)})
+                continue
             table = list(csv.reader(io.StringIO(dataset.get("csv", "").lstrip("\ufeff"), newline="")))
-            _, header = dataset_header(table)
-            columns.append({"name": dataset["name"], "columns": list(dict.fromkeys(cell for cell in header if cell))})
+            header_index, header = dataset_header(table)
+            names = list(dict.fromkeys(cell for cell in header if cell))
+            # Side-by-side blocks repeat headers; a column's value is its first filled occurrence in the row.
+            rows = [{name: next((clean(row[i]) for i, cell in enumerate(header) if cell == name and i < len(row) and clean(row[i])), "")
+                     for name in names} for row in table[header_index + 1:] if any(clean(cell) for cell in row)]
+            columns.append({"name": dataset["name"], "columns": names, **column_profile(names, rows)})
         return columns
+    if action == "records":
+        return parse_datasets(request.get("datasets", []), request.get("mappings"))
     if action == "check":
         versions = {}
         for name in ("splink", "pyarrow", "transformers", "torch"):
@@ -571,11 +696,12 @@ def handle(request: dict) -> dict:
         raise ValueError("Unknown analysis mode.")
     floor = max(0.0, min(1.0, float(request.get("low_threshold", 0.2)), float(request.get("threshold", 0.5))))
     # Small/custom tables can be compared locally without statistical training or a model.
-    trainable = len(records) >= 20 and sum(
+    trainable = len({record["dataset"] for record in records}) >= 2 and len(records) >= 20 and sum(
         sum(bool(r["fields"].get(field)) for r in records) >= 4
         for field in ("username", "display_name", "website", "location")) >= 2
     pairs = splink_pairs(records, min(float(request.get("threshold", 0.5)), floor)) if mode != "jina" and trainable else []
-    pairs = evidence_pairs(records, pairs, threshold=floor, per_source=30)
+    pairs = evidence_pairs(records, pairs, threshold=floor, per_source=30, within=bool(request.get("compare_within")),
+                           allow_primary_name_candidates=request.get("allow_primary_name_candidates") is True)
 
     rankings = []
     if mode != "splink" and pairs and request.get("model_path"):
@@ -597,5 +723,6 @@ if __name__ == "__main__":
         result = handle(json.load(sys.stdin))
         print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
     except Exception as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        message = str(error) if isinstance(error, ValueError) else f"{type(error).__name__}: {error}"
+        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
         sys.exit(1)

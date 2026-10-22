@@ -76,8 +76,9 @@ test("OpenAI compatible client sends the key, streams SSE and returns structured
       response.end("data: [DONE]\n\n");
     } else {
       assert.equal(body.response_format.type, "json_schema");
-      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidate_id: "c1",
-        explanation: "same handle", supporting_evidence: ["username"], conflicting_evidence: [], uncertain: false }) } }] }));
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidate_id: "candidate_1",
+        verdicts: [{ candidate_id: "candidate_1", verdict: "same", reason: "Explicit self-link" }],
+        explanation: "Explicit self-link", supporting_evidence: ["link"], conflicting_evidence: [], uncertain: false }) } }] }));
     }
   }, async url => {
     const client = llm.createClient({ aiProvider: "openai", apiBaseUrl: `${url}/v1`, apiKey: "sk-test",
@@ -143,6 +144,26 @@ test("shades dim with distance, dark colors brighten, related is brighter but ca
   assert.equal(colors.tagSlug("Jan Kowalski!"), "jan-kowalski");
 });
 
+test("lone profiles get the member shade, same-linked profiles share a derived color, claims take the person color", () => {
+  const person = {id:"p",folder:"Person",color:"#cc3333",tag:"comsift/person"};
+  const a = "Person/Analysis/Profiles/a.md", b = "Person/Analysis/Profiles/b.md", c = "Person/Analysis/Profiles/c.md";
+  const options = {depth:3,fade:.2,bridgeMode:"neutral",bridgeColor:"#888888",personaMix:1};
+  const independent = coloring.computeColors([person],[a,b,c],[[a,b]],options);
+  assert.ok([a,b,c].every(path=>independent.notes.get(path).color===colors.memberShade(person.color)));
+  assert.ok([a,b,c].every(path=>!independent.notes.get(path).persona));
+  const same = coloring.computeColors([person],[a,b,c],[[a,b]],options,[],[[a,b]]);
+  assert.equal(same.notes.get(a).color,same.notes.get(b).color);
+  assert.equal(same.notes.get(a).persona,true);
+  assert.notEqual(same.notes.get(a).color,person.color);
+  assert.equal(same.notes.get(c).color,colors.memberShade(person.color));
+  const claimed = coloring.computeColors([person],[a,b,c],[],options,[[a,person.id]],[[a,b]]);
+  assert.equal(claimed.notes.get(a).color,person.color);
+  assert.equal(claimed.notes.get(b).color,person.color);
+  assert.equal(claimed.notes.get(c).color,colors.memberShade(person.color));
+  const first = claimed.groups.find(group=>group.query.includes(a));
+  assert.equal(first.color,person.color,'the native Graph query must agree with the computed color');
+});
+
 test("graph coloring assigns owners, distances, neutral bridges and personas", () => {
   const people = [
     { id: "a", folder: "Alice", color: "#cc3333", tag: "comsift/alice" },
@@ -158,9 +179,9 @@ test("graph coloring assigns owners, distances, neutral bridges and personas", (
   assert.deepEqual(notes.get("Shared.md").owners.sort(), ["a", "b"]);
   assert.equal(notes.get("Near.md").distance, 1);
   assert.equal(notes.get("Far.md").distance, 2);
-  assert.equal(notes.get("Alice/Analysis/Profiles/x.md").persona, true);
-  assert.equal(notes.get("Alice/Analysis/Profiles/z.md").persona, undefined);
-  assert.equal(notes.get("Alice/Analysis/Profiles/z.md").color, "#cc3333");
+  assert.equal(notes.get("Alice/Analysis/Profiles/x.md").member, true, "a plain link does not make a custom person");
+  assert.equal(notes.get("Alice/Analysis/Profiles/z.md").color, colors.memberShade("#cc3333"));
+  assert.equal(notes.get("Alice/Analysis/Profiles/x.md").color, notes.get("Alice/Analysis/Profiles/y.md").color);
   assert.ok(groups.some(group => group.query === "tag:#comsift/alice"));
   assert.ok(groups.findIndex(group => group.query.includes("Profiles/x.md")) < groups.findIndex(group => group.query === "tag:#comsift/alice"));
   assert.equal(coloring.linkColor(notes.get("Alice/Alice.md"), notes.get("Bob/Bob.md"), options), "#888888");
@@ -190,11 +211,11 @@ test("old callout and comment blocks move into the comsift_links property", () =
   assert.deepEqual(graphLogic.readListProperty(next, "comsift_links"), ["[[P/x]]", "[[P/y]]"]);
 });
 
-test("Canvas embed sits at the top with a *** divider, once", () => {
+test("Canvas embed sits at the top with a *** divider before Notes, once", () => {
   const note = "---\ntitle: S\n---\nProse\n";
   const next = primary.withCanvasEmbed(note, "S.canvas");
-  assert.equal(next, "---\ntitle: S\n---\n![[S.canvas]]\n\n***\n\nProse\n");
+  assert.equal(next, "---\ntitle: S\n---\n\n![[S.canvas]]\n\n***\n\n## Notes\n\nProse\n");
   assert.equal(primary.withCanvasEmbed(next, "S.canvas"), next);
   assert.equal(primary.withCanvasEmbed("---\ntitle: S\n---\n![[S.canvas]]\n\nProse\n", "S.canvas"), next);
-  assert.equal(primary.withCanvasEmbed(note, "S.canvas", false), "---\ntitle: S\n---\n![[S.canvas]]\n\nProse\n");
+  assert.equal(primary.withCanvasEmbed(note, "S.canvas", false), "---\ntitle: S\n---\n\n![[S.canvas]]\n\n## Notes\n\nProse\n");
 });

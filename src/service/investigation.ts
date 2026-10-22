@@ -3,7 +3,12 @@ import ComsiftPlugin from "../main";
 import { uuid } from "../tool";
 import { safeName, legacyPairId, stripLegacyBlocks } from "./legacy";
 import { randomColor } from "./colors";
-import { convertLegacyTitle, frontmatterTitle, withCanvasEmbed, withTitle } from "./primaryNote";
+import { convertLegacyTitle, frontmatterTitle, primaryNoteLayout, withTitle } from "./primaryNote";
+import { promises as fs } from "fs";
+import { isAbsolute, join, resolve } from "path";
+import { homedir } from "os";
+import { relocatePersonText, safeRelativePath } from "./personPortability";
+import { upgradeProfileNote } from "../analysis/profileIdentity";
 
 export interface Investigation { id: string; folderPath: string; /** Graph View color, #rrggbb. */ color?: string }
 
@@ -49,8 +54,21 @@ export class InvestigationService {
     if (gone.length) await this.forget(gone);
   }
 
-  /** Move old `<!-- …:title -->` headings into the `title` property; add a title where missing. */
+  /** Layout of a person's primary note from the current settings (card, Canvas embed, `***`, `## Notes`). */
+  primaryLayout(content: string, name: string): string {
+    const setting = this.plugin.setting ?? {};
+    const card = setting.personCards !== false;
+    // Old generated profile blocks (promoted profiles) become the card; their rows move to frontmatter.
+    const carded = card ? upgradeProfileNote(content, true) : content;
+    return primaryNoteLayout(carded, { name, card, embedCanvas: setting.embedCanvas !== false, divider: setting.embedDivider !== false });
+  }
+
+  /**
+   * Move old `<!-- …:title -->` headings into the `title` property, add a title where missing and put the note
+   * in the current layout. Originals of changed notes are backed up first (profile-backups/<time>-person-notes).
+   */
   async normalizePrimaries() {
+    const changes: Array<{ file: TFile; content: string; upgrade: (text: string) => string }> = [];
     for (const item of Object.values(this.plugin.state.investigations)) {
       const file = this.plugin.app.vault.getFileByPath(this.mdPath(item));
       if (!file) continue;
@@ -59,13 +77,19 @@ export class InvestigationService {
       const upgrade = (text: string) => {
         const converted = convertLegacyTitle(text);
         const titled = frontmatterTitle(converted) ? converted : withTitle(converted, name);
-        return this.plugin.setting.embedCanvas ? withCanvasEmbed(titled, `${name}.canvas`, this.plugin.setting.embedDivider) : titled;
+        return this.primaryLayout(titled, name);
       };
-      if (upgrade(current) === current) continue;
+      if (upgrade(current) !== current) changes.push({ file, content: current, upgrade });
+    }
+    if (!changes.length) return;
+    await this.plugin.personCards?.backupNotes(changes.map(change => ({ path: change.file.path, content: change.content })), "person-notes");
+    for (const change of changes) {
       this.renameLock = true;
-      try { await this.plugin.app.vault.process(file, upgrade); }
+      try { await this.plugin.app.vault.process(change.file, change.upgrade); }
+      catch (error) { console.error(`[comsift] could not update ${change.file.path}`, error); }
       finally { this.renameLock = false; }
     }
+    new Notice(`Comsift: updated the layout of ${changes.length} people's notes.`, 6000);
   }
 
   private async forget(items: Investigation[]) {
@@ -121,27 +145,144 @@ export class InvestigationService {
     const examples = ["Alex", "Sam", "Jordan", "Taylor", "Morgan"];
     const example = examples[Math.floor(Math.random() * examples.length)];
     new Setting(modal.contentEl).setName("Name").addText(input => input.setPlaceholder(example).setValue(suggested).onChange(value => { name = value; }));
-    if (profile) modal.contentEl.createEl("p", { text: `Source profile: ${profile.path}. The original note stays where it is and appears on the new person's Canvas.` });
-    new Setting(modal.contentEl).setName("Graph color").setDesc("Color of this person in Graph View. A random one is picked for you.")
+    let depth = 1;
+    if (profile) {
+      modal.contentEl.createEl("p", { text: `Promote ${profile.path} into this person's main note and carry its connections.` });
+      new Setting(modal.contentEl).setName("Connection depth").setDesc("Immediate connections are included at depth 1. Higher values follow their connections; depth 0 carries only this profile.")
+        .addSlider(slider => slider.setLimits(0, 10, 1).setValue(depth).onChange(value => { depth = value; }));
+    }
+    new Setting(modal.contentEl).setName("Graph color").setDesc("Pick a color for this person.")
       .addColorPicker(picker => picker.setValue(color).onChange(value => { color = value; }))
       .addExtraButton(button => button.setIcon("dices").setTooltip("Another random color").onClick(() => {
         color = randomColor();
         const input = modal.contentEl.querySelector<HTMLInputElement>("input[type=color]");
         if (input) input.value = color;
       }));
-    new Setting(modal.contentEl).addButton(button => button.setButtonText("Create").setCta().onClick(async () => {
+    new Setting(modal.contentEl)
+      .addButton(button => button.setButtonText("Import folder").onClick(() => this.pickImportFolder(() => modal.close())))
+      .addButton(button => button.setButtonText("Create person").setCta().onClick(async () => {
       try {
-        const item = await this.create(name, color, profile);
+        const item = await this.create(name, color, profile, depth);
         modal.close();
         const canvas = this.plugin.app.vault.getFileByPath(this.canvasPath(item));
         if (canvas) await this.plugin.app.workspace.getLeaf(true).openFile(canvas);
-        new Notice(`Created person ${name.trim()}.`);
       } catch (error) { new Notice((error as Error).message, 8000); }
     }));
     modal.open();
   }
 
-  async create(name: string, color = randomColor(), profile?: TFile): Promise<Investigation> {
+  pickImportFolder(onImported?: () => void) {
+    const input = createEl("input");
+    input.type = "file";
+    input.setAttribute("webkitdirectory", "");
+    input.multiple = true;
+    input.onchange = () => {
+      const files = Array.from(input.files ?? []);
+      if (!files.length) return;
+      void this.importFolder(files).then(async item => {
+        onImported?.();
+        const file = this.plugin.app.vault.getFileByPath(this.mdPath(item));
+        if (file) await this.plugin.app.workspace.getLeaf(true).openFile(file);
+        new Notice(`Imported ${item.folderPath}.`);
+      }).catch(error => new Notice(`Import failed: ${(error as Error).message}`, 10000));
+    };
+    input.click();
+  }
+
+  async importFolder(files: File[]): Promise<Investigation> {
+    const entries = files.map(file => ({ file, path: safeRelativePath(file.webkitRelativePath || file.name) }));
+    const sourceName = entries[0]?.path.split("/")[0];
+    if (!sourceName || entries.some(entry => !entry.path.startsWith(sourceName + "/"))) throw new Error("Choose one person folder.");
+    const manifestFile = entries.find(entry => entry.path === `${sourceName}/comsift-person.json`);
+    const manifest = manifestFile ? JSON.parse(await manifestFile.file.text()) as { folderPath?: string; name?: string; color?: string } : {};
+    const name = safeName(manifest.name || sourceName);
+    const folderPath = this.destination(name);
+    if (this.plugin.app.vault.getAbstractFileByPath(folderPath)) throw new Error(`Folder already exists: ${folderPath}`);
+    const primary = entries.find(entry => entry.path === `${sourceName}/${name}.md`);
+    if (!primary) throw new Error(`Missing primary note ${name}.md. Choose an exported person folder.`);
+    const sourcePath = manifest.folderPath || sourceName;
+    const item: Investigation = { id: uuid(), folderPath, color: /^#[0-9a-f]{6}$/i.test(manifest.color ?? "") ? manifest.color : randomColor() };
+    // Validate and load everything before creating the destination.
+    const prepared = await Promise.all(entries.filter(entry => entry !== manifestFile).map(async entry => {
+      const relative = safeRelativePath(entry.path.slice(sourceName.length + 1));
+      const target = `${folderPath}/${relative}`;
+      if (/\.(md|canvas|json|csv|sheet)$/i.test(relative)) {
+        let text = relocatePersonText(await entry.file.text(), sourcePath, folderPath);
+        if (entry === primary) {
+          text = text.replace(/^comsift_id:[^\r\n]*$/m, `comsift_id: ${item.id}`);
+          if (!/^comsift_id:/m.test(text)) text = text.startsWith("---\n") ? text.replace(/^---\n/, `---\ncomsift_id: ${item.id}\n`) : `---\ncomsift_id: ${item.id}\n---\n${text}`;
+        }
+        return { target, text, data: undefined };
+      }
+      return { target, text: undefined, data: await entry.file.arrayBuffer() };
+    }));
+    await this.ensureFolder(folderPath);
+    try {
+      for (const entry of prepared) {
+        const parent = entry.target.slice(0, entry.target.lastIndexOf("/"));
+        await this.ensureFolder(parent);
+        if (entry.text !== undefined) await this.plugin.app.vault.create(entry.target, entry.text);
+        else await this.plugin.app.vault.createBinary(entry.target, entry.data);
+      }
+      if (!this.plugin.app.vault.getFileByPath(this.canvasPath(item))) await this.plugin.app.vault.create(this.canvasPath(item), JSON.stringify({ nodes: [], edges: [] }));
+      this.plugin.state.investigations[item.id] = item;
+      await this.plugin.saveState();
+      await this.plugin.graph.refreshInvestigation(item);
+      this.plugin.graphColors?.schedule(300);
+      return item;
+    } catch (error) {
+      new Notice(`Import incomplete in ${folderPath}; inspect that folder before retrying.`, 10000);
+      throw error;
+    }
+  }
+
+  promptExport(item: Investigation) {
+    const modal = new Modal(this.plugin.app);
+    modal.setTitle("Export person folder");
+    const defaultDirectory = this.plugin.setting.defaultExportDirectory?.trim() || homedir();
+    let directory = this.plugin.setting.lastExportDirectory?.trim() || defaultDirectory;
+    new Setting(modal.contentEl).setName("Export directory").setDesc(`Creates a new ${item.folderPath.split("/").at(-1)} folder here, including notes, sheets, connections and attachments. Existing folders are never overwritten. Leave blank to use ${defaultDirectory}.`)
+      .addText(input => input.setPlaceholder(defaultDirectory).setValue(directory).onChange(value => { directory = value.trim(); }));
+    new Setting(modal.contentEl).addButton(button => button.setButtonText("Export").setCta().onClick(async () => {
+      try { const destination = await this.exportToDirectory(item, directory); modal.close(); new Notice(`Exported to ${destination}.`); }
+      catch (error) { new Notice(`Export failed: ${(error as Error).message}`, 10000); }
+    }));
+    modal.open();
+  }
+
+  async exportToDirectory(item: Investigation, directory: string) {
+    const requested = directory.trim() || this.plugin.setting.defaultExportDirectory?.trim() || homedir();
+    if (!isAbsolute(requested)) throw new Error("Enter an absolute export directory.");
+    const parent = resolve(requested);
+    const destination = join(parent, item.folderPath.split("/").at(-1)!);
+    await this.exportFolder(item, destination);
+    this.plugin.setting.lastExportDirectory = parent;
+    await this.plugin.saveSettings();
+    return destination;
+  }
+
+  async exportFolder(item: Investigation, destination: string) {
+    if (!destination || resolve(destination) !== destination) throw new Error("Enter an absolute destination path.");
+    const files = this.plugin.app.vault.getFiles().filter(file => file.path.startsWith(item.folderPath + "/"));
+    // Nonrecursive mkdir refuses an existing folder, so an export never overwrites files.
+    await fs.mkdir(destination);
+    for (const file of files) {
+      const relative = safeRelativePath(file.path.slice(item.folderPath.length + 1));
+      const output = join(destination, relative);
+      await fs.mkdir(join(output, ".."), { recursive: true });
+      await fs.writeFile(output, new Uint8Array(await this.plugin.app.vault.readBinary(file)));
+    }
+    await fs.writeFile(join(destination, "comsift-person.json"), JSON.stringify({ format: "comsift-person", version: 1, folderPath: item.folderPath, name: item.folderPath.split("/").at(-1), color: item.color }, null, 2));
+  }
+
+  async create(name: string, color = randomColor(), profile?: TFile, depth = 1): Promise<Investigation> {
+    if (profile && this.plugin.analysis?.promoteProfile) {
+      const promoted = this.forPrimaryPath(profile.path);
+      if (promoted) return promoted;
+      const item = await this.create(name, color);
+      await this.plugin.analysis.promoteProfile(profile, item, depth);
+      return item;
+    }
     const clean = safeName(name);
     const root = this.usersRoot();
     const folderPath = this.destination(clean);
@@ -151,7 +292,7 @@ export class InvestigationService {
     const item: Investigation = { id: uuid(), folderPath, color };
     const titled = withTitle(`---\ncomsift_id: ${item.id}\n---\n\n`, clean);
     const linked = profile ? `${titled}\nSource profile: [[${profile.path.replace(/\.md$/i, "")}]]\n` : titled;
-    const md = this.plugin.setting?.embedCanvas === false ? linked : withCanvasEmbed(linked, `${clean}.canvas`, this.plugin.setting?.embedDivider !== false);
+    const md = this.primaryLayout(linked, clean);
     const nodes: Array<Record<string, unknown>> = [{ id: "comsift-main", type: "text", text: clean, x: 0, y: 0, width: 340, height: 96 }];
     const edges: Array<Record<string, unknown>> = [];
     if (profile) {
@@ -188,12 +329,11 @@ export class InvestigationService {
     const modal = new Modal(this.plugin.app);
     modal.setTitle("Migrate legacy pair");
     modal.contentEl.createEl("p", { text: `${file.path} + ${sourceCanvas.path} → ${destination}/` });
-    modal.contentEl.createEl("p", { text: "A snapshot is created first. Canvas data is preserved. Recognized generated JSON blocks are removed; handwritten and unrecognized text remains." });
+    modal.contentEl.createEl("p", { text: "Backs up both files, moves them into the person's folder, and removes old generated JSON blocks." });
     new Setting(modal.contentEl).addButton(button => button.setButtonText("Migrate").setCta().onClick(async () => {
       try {
-        const item = await this.migrate(file, sourceCanvas, content);
+        await this.migrate(file, sourceCanvas, content);
         modal.close();
-        new Notice(`Migrated to ${item.folderPath}. Backup retained.`, 10000);
       } catch (error) { new Notice(`Migration stopped: ${(error as Error).message}`, 12000); }
     }));
     modal.open();
@@ -223,7 +363,7 @@ export class InvestigationService {
     metadata = metadata ? `${metadata}\ncomsift_id: ${item.id}` : `comsift_id: ${item.id}`;
     const body = convertLegacyTitle(next).replace(/^\s*# [^\r\n]+\r?\n?/, "").trimStart();
     next = withTitle(`---\n${metadata}\n---\n\n${body}`, currentTitle);
-    if (this.plugin.setting?.embedCanvas !== false) next = withCanvasEmbed(next, `${name}.canvas`, this.plugin.setting?.embedDivider !== false);
+    next = this.primaryLayout(next, name);
     try {
       await this.plugin.app.fileManager.renameFile(mdFile, `${destination}/${name}.md`);
       await this.plugin.app.fileManager.renameFile(canvasFile, `${destination}/${name}.canvas`);

@@ -1,0 +1,12 @@
+{
+  "required": [
+    "better-embedded-canvas",
+    "advanced-canvas"
+  ],
+  "recommended": [
+    "graph-save"
+  ],
+  "optional": [
+    "clew"
+  ]
+}

@@ -1,9 +1,9 @@
-import WhereAmIPlugin from "../main";
+import ComsiftPlugin from "../main";
 
 class Layout {
-  main: WhereAmIPlugin;
+  main: ComsiftPlugin;
 
-  constructor(main: WhereAmIPlugin) {
+  constructor(main: ComsiftPlugin) {
     this.main = main;
   }
 

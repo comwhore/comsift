@@ -2,6 +2,22 @@ import { canvasFingerprint } from "./canvasPreview";
 import type { CanvasData, CanvasNode, CanvasEdge } from "./canvasModel";
 
 export interface CanvasChange { label: string; before: CanvasData; after: CanvasData }
+/** Return the unmet prerequisite without changing the live board. */
+export function canvasChangeBlocker(current: CanvasData, change: CanvasChange): string | null {
+  try { applyCanvasChange(current, change); return null; }
+  catch (error) { return error instanceof Error ? error.message : "A required change has not been accepted."; }
+}
+
+/** Reject dependent operations too, retaining independent edits in their original order. */
+export function remainingCanvasChanges(current: CanvasData, changes: CanvasChange[], rejected: CanvasChange): CanvasChange[] {
+  const retained: CanvasChange[] = [];
+  let proposed = current;
+  for (const change of changes) {
+    if (change === rejected) continue;
+    try { proposed = applyCanvasChange(proposed, change); retained.push(change); } catch { /* rejected prerequisite */ }
+  }
+  return retained;
+}
 /** Apply only this operation's delta. Independent operations may be accepted in any order. */
 export function applyCanvasChange(current: CanvasData, change: CanvasChange): CanvasData {
   const result = structuredClone(current);

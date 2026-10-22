@@ -270,11 +270,12 @@ body {
 	position: absolute;
 	bottom: 0;
 	right: 0;
-	background-color: #f4f5f8;
-	opacity: 0.9;
+	background-color: var(--background-secondary, #f4f5f8);
+	opacity: 1;
 	z-index: 12;
 }
 .x-spreadsheet-scrollbar.horizontal {
+	height: 15px;
 	right: 15px;
 	overflow-x: scroll;
 	overflow-y: hidden;
@@ -284,6 +285,7 @@ body {
 	background: #ddd;
 }
 .x-spreadsheet-scrollbar.vertical {
+	width: 15px;
 	bottom: 15px;
 	overflow-x: hidden;
 	overflow-y: scroll;
@@ -291,6 +293,24 @@ body {
 .x-spreadsheet-scrollbar.vertical > div {
 	width: 1px;
 	background: #ddd;
+}
+.x-spreadsheet-scrollbar::-webkit-scrollbar {
+	width: 15px;
+	height: 15px;
+}
+.x-spreadsheet-scrollbar::-webkit-scrollbar-track,
+.x-spreadsheet-scrollbar::-webkit-scrollbar-corner {
+	background: var(--background-secondary, #f4f5f8);
+}
+.x-spreadsheet-scrollbar::-webkit-scrollbar-thumb {
+	min-width: 24px;
+	min-height: 24px;
+	border: 3px solid var(--background-secondary, #f4f5f8);
+	border-radius: 8px;
+	background: var(--text-muted, #747984);
+}
+.x-spreadsheet-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: var(--text-normal, #414650);
 }
 .x-spreadsheet-overlayer {
 	position: absolute;

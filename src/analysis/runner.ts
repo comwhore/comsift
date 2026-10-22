@@ -33,8 +33,20 @@ export interface AnalyzeRequest {
   mode: AnalysisMode;
   threshold: number;
   low_threshold?: number;
+  allow_primary_name_candidates?: boolean;
+  compare_within?: boolean;
   model_path: string;
   device: "cpu" | "auto";
+}
+
+function parseEnvelope(stdout: string): { ok: boolean; error: string } | null {
+  try {
+    const parsed = JSON.parse(stdout.trim().split(/\r?\n/).at(-1) ?? "") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof (parsed as { ok?: unknown }).ok !== "boolean") return null;
+    const { ok, error } = parsed as { ok: boolean; error?: unknown };
+    if (error !== undefined && typeof error !== "string") return null;
+    return { ok, error: error ?? "" };
+  } catch { return null; }
 }
 
 export class AnalysisRunner {
@@ -55,26 +67,39 @@ export class AnalysisRunner {
         shell: false, windowsHide: true, signal,
         env: { ...process.env, HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" },
       });
+      let outputTooLarge = false;
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", chunk => {
         stdout += String(chunk);
-        if (stdout.length > 20_000_000) child.kill();
+        if (stdout.length > 20_000_000) { outputTooLarge = true; child.kill(); }
       });
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
       child.on("error", error => reject(error));
       child.stdin.on("error", () => { /* Process errors are reported by child/close. */ });
       child.on("close", (code, signalName) => {
         try {
+          if (signal?.aborted) throw new Error("Python analysis was cancelled.");
+          if (outputTooLarge) throw new Error("Python worker response too large.");
+          // The worker reports handled errors as a JSON envelope and exits 1; show that message, not just the exit code.
+          const reported = parseEnvelope(stdout);
+          if (reported && !reported.ok) throw new Error(reported.error || "Python analysis failed.");
+          if (code !== 0 || signalName) throw new Error(`Python worker failed (${signalName ?? `exit ${code}`})`);
           if (!stdout.trim()) {
-            throw new Error(`Python worker produced no output (${signalName ? `killed by ${signalName}` : `exit ${code}`})${stderr ? `: ${stderr.slice(-500)}` : ""}`);
+            throw new Error(`Python worker produced no output (exit ${code})${stderr ? `: ${stderr.slice(-500)}` : ""}`);
           }
           const lines = stdout.trim().split(/\r?\n/);
-          const response = JSON.parse(lines.at(-1) ?? "{}") as { ok?: boolean; error?: string; result?: unknown };
-          if (!response.ok) throw new Error(response.error || stderr || "Python analysis failed.");
+          const parsed = JSON.parse(lines.at(-1) ?? "{}") as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid Python response envelope.");
+          const response = parsed as Record<string, unknown>;
+          if (typeof response.ok !== "boolean" || (response.error !== undefined && typeof response.error !== "string")) {
+            throw new Error("Invalid Python response envelope.");
+          }
+          if (!response.ok) throw new Error(typeof response.error === "string" && response.error ? response.error : "Python analysis failed.");
+          if (!("result" in response)) throw new Error("Python response has no result.");
           resolve(response.result as T);
         } catch (error) {
-          reject(new Error(`${(error as Error).message}${code ? ` (exit ${code})` : ""}${stderr ? `: ${stderr.slice(-500)}` : ""}`));
+          reject(new Error(`${error instanceof Error ? error.message : String(error)}${code ? ` (exit ${code})` : ""}${stderr ? `: ${stderr.slice(-500)}` : ""}`));
         }
       });
       child.stdin.end(JSON.stringify(request));
