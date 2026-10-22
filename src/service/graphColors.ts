@@ -23,7 +23,7 @@ const CLEW_VIEW_TYPE = "clew-standalone-graph";
 
 /** Clew plugin internals (optional plugin; every access is feature-checked). */
 interface ClewPlugin { settings?: { nodeGroups?: unknown }; saveSettings?: () => Promise<void> }
-interface ClewPane { applyFocus?: (file: TFile, hops: number, options: { highlightCenter: boolean; fitCamera: boolean }) => void; repaintNodeGroups?: () => void; refreshTheme?: () => void }
+interface ClewPane { applyFocus?: (file: TFile, hops: number, options: { highlightCenter: boolean; fitCamera: boolean }) => void; panCameraToNode?: (path: string) => void; repaintNodeGroups?: () => void; refreshTheme?: () => void }
 
 export class GraphColorService {
   private timer: number | null = null;
@@ -50,11 +50,22 @@ export class GraphColorService {
   /** Focus an existing Clew/core graph, or open a local graph centered on this note. */
   async focus(file: TFile): Promise<void> {
     const workspace = this.plugin.app.workspace;
-    for (const leaf of workspace.getLeavesOfType(CLEW_VIEW_TYPE)) {
+    const internal = this.plugin.app as unknown as { plugins?: { getPlugin?: (id: string) => unknown } };
+    const clewInstalled = Boolean(internal.plugins?.getPlugin?.("clew"));
+    const clewLeaves = workspace.getLeavesOfType(CLEW_VIEW_TYPE);
+    if (clewInstalled && clewLeaves.length === 0) {
+      try {
+        const leaf = workspace.getLeaf("tab");
+        await leaf.setViewState({ type: CLEW_VIEW_TYPE, active: true });
+        clewLeaves.push(leaf);
+      } catch { /* Fall back to Graph View if Clew cannot open. */ }
+    }
+    for (const leaf of clewLeaves) {
       const pane = (leaf.view as unknown as { pane?: ClewPane }).pane;
       if (!pane?.applyFocus) continue;
       try {
-        pane.applyFocus(file, 1, { highlightCenter: true, fitCamera: true });
+        pane.applyFocus(file, 1, { highlightCenter: true, fitCamera: false });
+        pane.panCameraToNode?.(file.path);
         await workspace.revealLeaf(leaf);
         return;
       } catch { /* Fall through if an optional plugin changed its API. */ }
