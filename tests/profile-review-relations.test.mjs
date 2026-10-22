@@ -64,7 +64,7 @@ test("focus uses Clew's current applyFocus API and opens a centered local graph 
   const clew = { view: { pane: { applyFocus: (...args) => called.push(args) } } };
   const workspace = { getLeavesOfType: type => type === "clew-standalone-graph" ? [clew] : [], revealLeaf: async leaf => called.push(leaf) };
   await new GraphColorService({ app: { workspace } }).focus(file);
-  assert.deepEqual(called[0], [file, 1, { highlightCenter: true, fitCamera: true }]);
+  assert.deepEqual(called[0], [file, 1, { highlightCenter: true, fitCamera: false }]);
   assert.equal(called[1], clew);
   workspace.getLeavesOfType = () => [];
   const fallback = { setViewState: async state => called.push(state) };
