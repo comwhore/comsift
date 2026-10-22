@@ -1,6 +1,6 @@
 {
   "name": "comsift",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "author": "comwhore",
   "description": "Research people from a Canvas, run Sherlock and Maigret, match accounts across CSV exports, and chat with an AI about your notes and boards.",
   "main": "main.js",

@@ -21,7 +21,9 @@ jobs:
 
       - name: Build plugin
         run: |
-          test -s "release-notes/$GITHUB_REF_NAME.md"
+          test -s "release-notes/$GITHUB_REF_NAME.md" || { echo "::error::Missing release-notes/$GITHUB_REF_NAME.md"; exit 1; }
+          test "$(jq -r .version manifest.json)" = "$GITHUB_REF_NAME" || { echo "::error::Manifest version does not match tag $GITHUB_REF_NAME"; exit 1; }
+          test "$(jq -r .version package.json)" = "$GITHUB_REF_NAME" || { echo "::error::Package version does not match tag $GITHUB_REF_NAME"; exit 1; }
           npm ci
           npm run lint
           npm run typecheck
