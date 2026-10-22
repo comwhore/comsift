@@ -2,6 +2,8 @@ comsift — third-party components
 ================================
 
 This plugin is distributed under GPLv3. See LICENSE and COPYING.
+Copyright (C) 2026 comwhore. Comsift is licensed under GPL-3.0-or-later;
+the full license text is in LICENSE and COPYING.
 
 obsidian-excel (excel-modded/)
 ------------------------------
@@ -21,7 +23,7 @@ External tools (not bundled)
 - Clew (optional Obsidian plugin, integration only, no code included):
   https://github.com/christian-luger-at/obsidian-clew
 - Sherlock: https://github.com/sherlock-project/sherlock
-- Maigret and Social Analyzer: separate installs; configure paths in settings.
+- Maigret: separate install; configure path in settings.
 
 Use OSINT features responsibly and follow website terms of service and
 applicable law.

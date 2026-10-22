@@ -21,6 +21,7 @@ jobs:
 
       - name: Build plugin
         run: |
+          test -s "release-notes/$GITHUB_REF_NAME.md"
           npm ci
           npm run lint
           npm run typecheck
@@ -36,9 +37,18 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
             main.js
             manifest.json
             styles.css
             comsift.zip
-          generate_release_notes: true
+          body_path: release-notes/${{ github.ref_name }}.md
+      - name: Publish release after assets are uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort > uploaded-assets.txt
+          printf '%s\n' main.js manifest.json styles.css comsift.zip | sort > expected-assets.txt
+          diff -u expected-assets.txt uploaded-assets.txt
+          gh release edit "$GITHUB_REF_NAME" --draft=false
