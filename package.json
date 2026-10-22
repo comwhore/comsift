@@ -1,8 +1,8 @@
 {
   "name": "comsift",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "comwhore",
-  "description": "Research people in Obsidian: run Sherlock and Maigret from a Canvas, match accounts across CSV exports, and chat with an AI about your notes and boards.",
+  "description": "Research people from a Canvas, run Sherlock and Maigret, match accounts across CSV exports, and chat with an AI about your notes and boards.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
